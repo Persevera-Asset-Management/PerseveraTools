@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "persevera_tools"
+version = "0.1.0"
+description = "Internal tools for Persevera Asset Management"
+authors = [{ name = "Persevera Asset Management" }]
+dependencies = [
+    "pandas",
+    "numpy",
+    "psycopg2-binary",
+    "sqlalchemy",
+    "python-dotenv",
+]
