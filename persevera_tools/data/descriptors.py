@@ -4,10 +4,10 @@ import pandas as pd
 
 from ..db.operations import read_sql
 
-def get_company_data(ticker: Union[str, List[str]],
-                     descriptor: str,
-                     start_date: Optional[str] = None,
-                     end_date: Optional[str] = None) -> pd.DataFrame:
+def get_descriptors(ticker: Union[str, List[str]],
+                    descriptor: str,
+                    start_date: Optional[str] = None,
+                    end_date: Optional[str] = None) -> pd.DataFrame:
     """Get company data from factor_zoo table.
     
     Args:
@@ -55,7 +55,7 @@ def get_company_data(ticker: Union[str, List[str]],
     tickers_str = "','".join(tickers)
     query = f"""
         SELECT date, code, value 
-        FROM descriptor_zoo 
+        FROM factor_zoo 
         WHERE code IN ('{tickers_str}') 
         AND field = '{descriptor}'
     """
