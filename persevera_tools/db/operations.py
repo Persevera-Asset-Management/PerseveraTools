@@ -15,7 +15,7 @@ from .connection import get_db_engine
 
 logger = logging.getLogger(__name__)
 
-def read_table(data: pd.DataFrame,
+def to_sql(data: pd.DataFrame,
                table_name: str,
                primary_keys: list,
                update: bool,
@@ -93,7 +93,7 @@ def read_table(data: pd.DataFrame,
         conn.close()
         engine.dispose()
 
-def to_sql(sql_query: str, date_columns: Optional[List[str]] = None) -> pd.DataFrame:
+def read_sql(sql_query: str, date_columns: Optional[List[str]] = None) -> pd.DataFrame:
     """Read data from SQL table based on the provided query."""
     engine = get_db_engine()
     try:

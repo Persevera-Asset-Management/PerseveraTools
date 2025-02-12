@@ -2,7 +2,7 @@ import pandas as pd
 import sqlalchemy
 from typing import Optional
 
-from ..db.operations import read_table
+from ..db.operations import read_sql
 
 def get_series(code: str, 
                start_date: Optional[str] = None, 
@@ -19,22 +19,15 @@ def get_series(code: str,
     Returns:
         DataFrame with date and value columns for the indicator
     """
-    query = "SELECT date, value FROM indicators WHERE code = %(code)s AND field = %(field)s"
+    query = "SELECT date, value FROM indicators WHERE code = '{code}' AND field = '{field}'".format(
+        code=code, field=field
+    )
     
-    # Add date filters if provided
     if start_date:
-        query += " AND date >= %(start_date)s"
+        query += f" AND date >= '{start_date}'"
     if end_date:
-        query += " AND date <= %(end_date)s"
+        query += f" AND date <= '{end_date}'"
         
     query += " ORDER BY date"
     
-    params = {
-        'code': code,
-        'field': field,
-        'start_date': start_date,
-        'end_date': end_date
-    }
-    
-    df = read_table(sqlalchemy.text(query), params=params, date_columns=['date'])
-    return df
+    return read_sql(query, date_columns=['date'])
