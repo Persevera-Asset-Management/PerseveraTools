@@ -2,12 +2,12 @@ from datetime import datetime, timedelta
 from typing import List
 import pandas as pd
 
-from ..db.operations import read_table
+from ..db.operations import read_sql
 
 def get_holidays() -> List[pd.Timestamp]:
     """Read and return ANBIMA holidays from database."""
     query = """SELECT * FROM feriados_anbima"""
-    df = read_table(query, date_columns=['date'])
+    df = read_sql(query, date_columns=['date'])
     return df['date'].tolist()
 
 def excel_to_datetime(serial_date):

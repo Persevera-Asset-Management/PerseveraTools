@@ -3,7 +3,7 @@ import pandas as pd
 from typing import Dict, Optional
 
 from ..config import settings
-from ..db.operations import read_table
+from ..db.operations import read_sql
 
 def get_bloomberg_codes(sheet_name: str, category: str) -> Dict[str, str]:
     """Get Bloomberg codes and mnemonics from cadastro-base.xlsx."""
@@ -16,7 +16,7 @@ def get_bloomberg_codes(sheet_name: str, category: str) -> Dict[str, str]:
 def get_securities_by_exchange(exchange: str) -> Dict[str, str]:
     """Get securities information from database by exchange."""
     query = f"SELECT * FROM b3_active_securities WHERE code_exchange = '{exchange}'"
-    df = read_table(query)
+    df = read_sql(query)
     df = df.assign(code_bloomberg=lambda x: x['code'] + ' ' + x['code_exchange'] + ' Equity')
     df = df.drop(columns='code_exchange')
     df = df.set_index('code_bloomberg')
