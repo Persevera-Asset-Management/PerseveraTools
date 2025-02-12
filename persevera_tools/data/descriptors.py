@@ -4,35 +4,35 @@ import pandas as pd
 
 from ..db.operations import read_sql
 
-def get_series(code: Union[str, List[str]], 
-               start_date: Optional[str] = None, 
-               end_date: Optional[str] = None,
-               field: str = 'close') -> pd.DataFrame:
-    """Get time series data for one or more indicators from the database.
+def get_company_data(ticker: Union[str, List[str]],
+                     descriptor: str,
+                     start_date: Optional[str] = None,
+                     end_date: Optional[str] = None) -> pd.DataFrame:
+    """Get company data from factor_zoo table.
     
     Args:
-        code: Single indicator code or list of codes to retrieve
+        ticker: Single company ticker or list of tickers
+        descriptor: Descriptor to retrieve (e.g., 'pe', 'ev_ebitda', etc.)
         start_date: Optional start date filter (format: 'YYYY-MM-DD')
         end_date: Optional end date filter (format: 'YYYY-MM-DD')
-        field: Field to retrieve (default: 'close')
         
     Returns:
-        DataFrame with date and value columns for the indicator(s)
-        If multiple codes are provided, the DataFrame will have one column per code
+        DataFrame with date and descriptor values for the company(ies)
+        If multiple tickers are provided, the DataFrame will have one column per ticker
         
     Raises:
-        ValueError: If dates are in invalid format or if end_date is before start_date
+        ValueError: If dates are invalid or if no data is found
     """
-    # Validate codes
-    if isinstance(code, str):
-        codes = [code]
-    elif isinstance(code, list):
-        codes = code
+    # Validate tickers
+    if isinstance(ticker, str):
+        tickers = [ticker]
+    elif isinstance(ticker, list):
+        tickers = ticker
     else:
-        raise ValueError("code must be a string or list of strings")
+        raise ValueError("ticker must be a string or list of strings")
     
-    if not all(isinstance(c, str) and c for c in codes):
-        raise ValueError("All codes must be non-empty strings")
+    if not all(isinstance(t, str) and t for t in tickers):
+        raise ValueError("All tickers must be non-empty strings")
 
     # Validate dates if provided
     date_format = "%Y-%m-%d"
@@ -52,12 +52,12 @@ def get_series(code: Union[str, List[str]],
         raise ValueError("end_date cannot be before start_date")
 
     # Build query using validated parameters
-    codes_str = "','".join(codes)
+    tickers_str = "','".join(tickers)
     query = f"""
         SELECT date, code, value 
-        FROM indicadores 
-        WHERE code IN ('{codes_str}') 
-        AND field = '{field}'
+        FROM descriptor_zoo 
+        WHERE code IN ('{tickers_str}') 
+        AND field = '{descriptor}'
     """
     
     if start_date:
@@ -70,10 +70,10 @@ def get_series(code: Union[str, List[str]],
     df = read_sql(query, date_columns=['date'])
     
     if df.empty:
-        raise ValueError(f"No data found for code(s) {codes} with field '{field}'")
+        raise ValueError(f"No data found for ticker(s) {tickers} with descriptor '{descriptor}'")
     
-    # Pivot the data if multiple codes to have one column per code
-    if len(codes) > 1:
+    # Pivot the data if multiple tickers to have one column per ticker
+    if len(tickers) > 1:
         df = df.pivot(index='date', columns='code', values='value')
         df.columns.name = None  # Remove column name
     else:
