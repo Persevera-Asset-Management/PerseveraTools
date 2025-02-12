@@ -11,5 +11,6 @@ __all__ = [
     'get_securities_by_exchange',
     'get_raw_tickers',
     'get_url',
-    'get_series'
+    'get_series',
+    'get_company_data'
 ]
