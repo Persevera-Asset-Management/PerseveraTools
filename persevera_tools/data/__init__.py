@@ -4,10 +4,12 @@ from .lookups import (
     get_raw_tickers,
     get_url
 )
+from .indicators import get_series
 
 __all__ = [
     'get_bloomberg_codes',
     'get_securities_by_exchange',
     'get_raw_tickers',
-    'get_url'
+    'get_url',
+    'get_series'
 ]
