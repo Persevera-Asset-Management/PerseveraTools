@@ -5,23 +5,21 @@ import pandas as pd
 from ..db.operations import read_sql
 
 def get_descriptors(ticker: Union[str, List[str]],
-                    descriptor: str,
-                    start_date: Optional[str] = None,
-                    end_date: Optional[str] = None) -> pd.DataFrame:
-    """Get company data from factor_zoo table.
+                   descriptor: Union[str, List[str]],
+                   start_date: Optional[str] = None, 
+                   end_date: Optional[str] = None) -> pd.DataFrame:
+    """Get descriptors from factor_zoo table.
     
     Args:
-        ticker: Single company ticker or list of tickers
-        descriptor: Descriptor to retrieve (e.g., 'pe', 'ev_ebitda', etc.)
+        ticker: Single ticker or list of tickers
+        descriptor: Single descriptor or list of descriptors (e.g., 'pe', 'ev_ebitda')
         start_date: Optional start date filter (format: 'YYYY-MM-DD')
         end_date: Optional end date filter (format: 'YYYY-MM-DD')
         
     Returns:
-        DataFrame with date and descriptor values for the company(ies)
-        If multiple tickers are provided, the DataFrame will have one column per ticker
-        
-    Raises:
-        ValueError: If dates are invalid or if no data is found
+        DataFrame with MultiIndex columns (ticker, descriptor) if multiple tickers and descriptors
+        DataFrame with simple columns if single ticker or descriptor
+        All DataFrames are indexed by date
     """
     # Validate tickers
     if isinstance(ticker, str):
@@ -33,6 +31,17 @@ def get_descriptors(ticker: Union[str, List[str]],
     
     if not all(isinstance(t, str) and t for t in tickers):
         raise ValueError("All tickers must be non-empty strings")
+
+    # Validate descriptors
+    if isinstance(descriptor, str):
+        descriptors = [descriptor]
+    elif isinstance(descriptor, list):
+        descriptors = descriptor
+    else:
+        raise ValueError("descriptor must be a string or list of strings")
+        
+    if not all(isinstance(d, str) and d for d in descriptors):
+        raise ValueError("All descriptors must be non-empty strings")
 
     # Validate dates if provided
     date_format = "%Y-%m-%d"
@@ -51,13 +60,15 @@ def get_descriptors(ticker: Union[str, List[str]],
     if start_date and end_date and start_dt > end_dt:
         raise ValueError("end_date cannot be before start_date")
 
-    # Build query using validated parameters
+    # Build query
     tickers_str = "','".join(tickers)
+    descriptors_str = "','".join(descriptors)
+    
     query = f"""
-        SELECT date, code, value 
+        SELECT date, code as ticker, field as descriptor, value
         FROM factor_zoo 
-        WHERE code IN ('{tickers_str}') 
-        AND field = '{descriptor}'
+        WHERE code IN ('{tickers_str}')
+        AND field IN ('{descriptors_str}')
     """
     
     if start_date:
@@ -65,18 +76,26 @@ def get_descriptors(ticker: Union[str, List[str]],
     if end_date:
         query += f" AND date <= '{end_date}'"
         
-    query += " ORDER BY date, code"
+    query += " ORDER BY date, code, field"
     
     df = read_sql(query, date_columns=['date'])
     
     if df.empty:
-        raise ValueError(f"No data found for ticker(s) {tickers} with descriptor '{descriptor}'")
+        raise ValueError(f"No data found for ticker(s) {tickers} with descriptor(s) {descriptors}")
     
-    # Pivot the data if multiple tickers to have one column per ticker
-    if len(tickers) > 1:
-        df = df.pivot(index='date', columns='code', values='value')
-        df.columns.name = None  # Remove column name
-    else:
-        df = df.drop(columns='code').set_index('date')
+    # Pivot the data to get the desired format
+    df = df.pivot_table(
+        index='date',
+        columns=['ticker', 'descriptor'],
+        values='value'
+    )
+    
+    # Simplify output if single ticker or descriptor
+    if len(tickers) == 1 and len(descriptors) == 1:
+        return df.droplevel(['ticker', 'descriptor'], axis=1)
+    elif len(tickers) == 1:
+        return df.droplevel('ticker', axis=1)
+    elif len(descriptors) == 1:
+        return df.droplevel('descriptor', axis=1)
     
     return df
