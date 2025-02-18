@@ -58,6 +58,6 @@ stocks = get_series(['br_ibovespa', 'us_sp500'],
 
 # Get company descriptors
 pe_ratios = get_descriptors(['PETR4', 'VALE3'], 
-                          factor='price_to_earnings_fwd',
+                          descriptor='price_to_earnings_fwd',
                           start_date='2024-01-01')
 ```
