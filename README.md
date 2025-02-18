@@ -8,12 +8,13 @@ Install directly from GitHub:
 ```
 pip install git+https://github.com/Persevera-Asset-Management/PerseveraTools.git
 ```
+
 ## Configuration
 
 1. Create a .persevera directory in your home folder:
 
 ```
-Copymkdir %USERPROFILE%\.persevera  # Windows
+mkdir %USERPROFILE%\.persevera  # Windows
 mkdir ~/.persevera              # Mac/Linux
 ```
 
@@ -33,8 +34,9 @@ PERSEVERA_DB_NAME=
 ```
 
 ## Usage Examples
+
 ### Database Operations
-```
+```python
 from persevera_tools.db import read_sql, to_sql
 
 # Read from database
@@ -45,11 +47,11 @@ to_sql(df, "your_table", primary_keys=["id"], update=True)
 ```
 
 ### Market Data
-```
+```python
 from persevera_tools.data import get_series, get_descriptors
 
 # Get market data for a single asset
-ibov = get_series('IBOV')
+ibov = get_series('br_cdi_index')
 
 # Get market data for multiple assets
 stocks = get_series(['br_ibovespa', 'us_sp500'],
@@ -57,7 +59,7 @@ stocks = get_series(['br_ibovespa', 'us_sp500'],
                    field='close')
 
 # Get company descriptors
-pe_ratios = get_descriptors(['PETR4', 'VALE3'], 
-                          factor='price_to_earnings_fwd',
+pe_ratios = get_descriptors(tickers=['PETR4', 'VALE3'], 
+                          descriptors='price_to_earnings_fwd',
                           start_date='2024-01-01')
 ```

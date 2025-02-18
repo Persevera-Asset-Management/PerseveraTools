@@ -4,14 +4,14 @@ import pandas as pd
 
 from ..db.operations import read_sql
 
-def get_descriptors(ticker: Union[str, List[str]],
-                   descriptor: Union[str, List[str]],
+def get_descriptors(tickers: Union[str, List[str]],
+                   descriptors: Union[str, List[str]],
                    start_date: Optional[str] = None, 
                    end_date: Optional[str] = None) -> pd.DataFrame:
     """Get descriptors from factor_zoo table.
     
     Args:
-        ticker: Single ticker or list of tickers
+        tickers: Single ticker or list of tickers
         descriptor: Single descriptor or list of descriptors (e.g., 'pe', 'ev_ebitda')
         start_date: Optional start date filter (format: 'YYYY-MM-DD')
         end_date: Optional end date filter (format: 'YYYY-MM-DD')
@@ -22,10 +22,10 @@ def get_descriptors(ticker: Union[str, List[str]],
         All DataFrames are indexed by date
     """
     # Validate tickers
-    if isinstance(ticker, str):
-        tickers = [ticker]
-    elif isinstance(ticker, list):
-        tickers = ticker
+    if isinstance(tickers, str):
+        tickers = [tickers]
+    elif isinstance(tickers, list):
+        tickers = tickers
     else:
         raise ValueError("ticker must be a string or list of strings")
     
@@ -33,10 +33,10 @@ def get_descriptors(ticker: Union[str, List[str]],
         raise ValueError("All tickers must be non-empty strings")
 
     # Validate descriptors
-    if isinstance(descriptor, str):
-        descriptors = [descriptor]
-    elif isinstance(descriptor, list):
-        descriptors = descriptor
+    if isinstance(descriptors, str):
+        descriptors = [descriptors]
+    elif isinstance(descriptors, list):
+        descriptors = descriptors
     else:
         raise ValueError("descriptor must be a string or list of strings")
         
