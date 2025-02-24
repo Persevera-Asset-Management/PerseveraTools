@@ -6,6 +6,7 @@ from .lookups import (
 )
 from .indicators import get_series
 from .descriptors import get_descriptors
+from .index_composition import get_index_composition
 
 __all__ = [
     'get_bloomberg_codes',
@@ -13,5 +14,6 @@ __all__ = [
     'get_raw_tickers',
     'get_url',
     'get_series',
-    'get_descriptors'
+    'get_descriptors',
+    'get_index_composition'
 ]

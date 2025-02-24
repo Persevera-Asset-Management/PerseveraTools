@@ -51,7 +51,7 @@ to_sql(df, "your_table", primary_keys=["id"], update=True)
 
 ### Market Data
 
-The package offers two main functions for retrieving market data:
+The package offers three main functions for retrieving market data:
 
 #### get_series()
 Retrieves time series data from the `indicadores` table:
@@ -96,6 +96,25 @@ Parameters:
 - `start_date`: Optional start date (YYYY-MM-DD format)
 - `end_date`: Optional end date (YYYY-MM-DD format)
 
+#### get_index_composition()
+Retrieves index composition data from the `b3_index_composition` table:
+
+```python
+from persevera_tools.data import get_index_composition
+
+# Get composition for a single index
+ibov_comp = get_index_composition('IBOV')
+
+# Get composition for multiple indices
+indices_comp = get_index_composition(['IBOV', 'IBX100'],
+                                    start_date='2024-01-01')
+```
+
+Parameters:
+- `index_code`: Single index code or list of index codes (e.g., 'IBOV', 'IBX100')
+- `start_date`: Optional start date (YYYY-MM-DD format)
+- `end_date`: Optional end date (YYYY-MM-DD format)
+
 Returns:
-- Single ticker/descriptor: DataFrame with date index and values
-- Multiple tickers/descriptors: DataFrame with MultiIndex columns (ticker, descriptor)
+- Single index: DataFrame with date index and ticker columns
+- Multiple indices: DataFrame with MultiIndex columns (index_code, ticker)

@@ -5,9 +5,9 @@ import pandas as pd
 from ..db.operations import read_sql
 
 def get_descriptors(tickers: Union[str, List[str]],
-                   descriptors: Union[str, List[str]],
-                   start_date: Optional[str] = None, 
-                   end_date: Optional[str] = None) -> pd.DataFrame:
+                    descriptors: Union[str, List[str]],
+                    start_date: Optional[str] = None, 
+                    end_date: Optional[str] = None) -> pd.DataFrame:
     """Get descriptors from factor_zoo table.
     
     Args:
