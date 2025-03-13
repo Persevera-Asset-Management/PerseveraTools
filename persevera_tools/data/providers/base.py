@@ -1,6 +1,7 @@
 from abc import ABC, abstractmethod
 from typing import Dict, List, Optional, Any
 import pandas as pd
+import numpy as np
 import logging
 from datetime import datetime
 
@@ -89,7 +90,7 @@ class DataProvider(ABC):
             df['value'] = df['value'].astype(float)
             
             # Check for infinite values
-            if not df['value'].isfinite().all():
+            if not np.isfinite(df['value']).all():
                 raise ValidationError("Found infinite values in 'value' column")
             
             # Filter by start date and sort
