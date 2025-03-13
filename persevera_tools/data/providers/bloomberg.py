@@ -8,7 +8,9 @@ from xbbg import blp
 
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_raw_tickers, get_bloomberg_codes, get_securities_by_exchange
-from ...config.settings import DATA_PATH
+from ...config import settings
+
+DATA_PATH = settings.DATA_PATH
 
 DataCategory = Literal[
     # Market data categories

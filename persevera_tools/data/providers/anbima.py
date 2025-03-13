@@ -6,7 +6,10 @@ import urllib.request
 
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_url
-from ...config.settings import DATA_PATH
+from ...config import settings
+
+DATA_PATH = settings.DATA_PATH
+
 
 class AnbimaProvider(DataProvider):
     """Provider for ANBIMA data."""
