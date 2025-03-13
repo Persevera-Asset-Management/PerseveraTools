@@ -29,8 +29,18 @@ class Settings:
         # Load FRED API key
         self.FRED_API_KEY = os.getenv('PERSEVERA_FRED_API_KEY')
 
-        # Load logging configuration
-        self.LOG_CONFIG = DEFAULT_CONFIG['LOG_CONFIG']
+        # Load logging configuration with environment variable overrides
+        self.LOG_CONFIG = DEFAULT_CONFIG['LOG_CONFIG'].copy()
+        
+        # Override logging settings from environment variables if provided
+        if os.getenv('PERSEVERA_LOG_FORMAT'):
+            self.LOG_CONFIG['log_format'] = os.getenv('PERSEVERA_LOG_FORMAT')
+        
+        if os.getenv('PERSEVERA_LOG_DATE_FORMAT'):
+            self.LOG_CONFIG['log_datefmt'] = os.getenv('PERSEVERA_LOG_DATE_FORMAT')
+        
+        if os.getenv('PERSEVERA_LOG_LEVEL'):
+            self.LOG_CONFIG['default_level'] = os.getenv('PERSEVERA_LOG_LEVEL')
 
     def validate(self) -> bool:
         """Validate that all required configuration is present"""
