@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="persevera_tools",
-    version="0.2.6",
+    version="0.2.7",
     packages=find_packages(),
     install_requires=[
         "pandas",
@@ -10,6 +10,9 @@ setup(
         "psycopg2-binary",
         "sqlalchemy",
         "python-dotenv",
-        "xbbg"
+        "xbbg",
+        "sidrapy",
+        "fredapi",
+        "python-bcb"
     ],
 )
