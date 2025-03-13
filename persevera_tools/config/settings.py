@@ -26,6 +26,9 @@ class Settings:
             'database': os.getenv('PERSEVERA_DB_NAME', DEFAULT_CONFIG['DB']['database'])
         }
 
+        # Load FRED API key
+        self.FRED_API_KEY = os.getenv('PERSEVERA_FRED_API_KEY')
+
         # Load logging configuration
         self.LOG_CONFIG = DEFAULT_CONFIG['LOG_CONFIG']
 
