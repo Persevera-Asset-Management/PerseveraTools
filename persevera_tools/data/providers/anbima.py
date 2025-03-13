@@ -6,7 +6,7 @@ import urllib.request
 
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_url
-from ..config.settings import PERSEVERA_DATA_PATH
+from ...config.settings import PERSEVERA_DATA_PATH
 
 class AnbimaProvider(DataProvider):
     """Provider for ANBIMA data."""

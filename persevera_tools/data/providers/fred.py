@@ -4,7 +4,7 @@ from fredapi import Fred
 
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_raw_tickers
-from ..config.settings import FRED_API_KEY
+from ...config.settings import FRED_API_KEY
 
 
 class FredProvider(DataProvider):

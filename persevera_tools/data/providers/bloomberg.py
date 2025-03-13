@@ -8,7 +8,7 @@ from xbbg import blp
 
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_raw_tickers, get_bloomberg_codes, get_securities_by_exchange
-from ..config.settings import PERSEVERA_DATA_PATH
+from ...config.settings import PERSEVERA_DATA_PATH
 
 DataCategory = Literal[
     # Market data categories
