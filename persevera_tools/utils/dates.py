@@ -2,10 +2,12 @@ from datetime import datetime, timedelta
 from typing import List
 import pandas as pd
 
-from ..db.operations import read_sql
 
 def get_holidays() -> List[pd.Timestamp]:
     """Read and return ANBIMA holidays from database."""
+    # Use lazy import to avoid circular dependency
+    from ..db.operations import read_sql
+    
     query = """SELECT * FROM feriados_anbima"""
     df = read_sql(query, date_columns=['date'])
     return df['date'].tolist()
