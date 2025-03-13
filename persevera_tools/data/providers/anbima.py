@@ -6,7 +6,7 @@ import urllib.request
 
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_url
-from ...config.settings import PERSEVERA_DATA_PATH
+from ...config.settings import DATA_PATH
 
 class AnbimaProvider(DataProvider):
     """Provider for ANBIMA data."""
@@ -27,7 +27,7 @@ class AnbimaProvider(DataProvider):
         self._log_processing('anbima')
         
         # Create directory if it doesn't exist
-        anbima_dir = os.path.join(PERSEVERA_DATA_PATH, 'anbima')
+        anbima_dir = os.path.join(DATA_PATH, 'anbima')
         os.makedirs(anbima_dir, exist_ok=True)
         
         if download_new:

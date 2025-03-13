@@ -8,7 +8,7 @@ from xbbg import blp
 
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_raw_tickers, get_bloomberg_codes, get_securities_by_exchange
-from ...config.settings import PERSEVERA_DATA_PATH
+from ...config.settings import DATA_PATH
 
 DataCategory = Literal[
     # Market data categories
@@ -53,7 +53,7 @@ class BloombergProvider(DataProvider):
     def _load_field_mappings(self) -> None:
         """Load field mappings from the configuration file."""
         try:
-            file_path = self.company_fields_file or os.path.join(PERSEVERA_DATA_PATH, "cadastro-base.xlsx")
+            file_path = self.company_fields_file or os.path.join(DATA_PATH, "cadastro-base.xlsx")
             if os.path.exists(file_path):
                 base = pd.read_excel(file_path, sheet_name='equity_signals')
                 self.field_mappings = base.groupby('category').apply(
