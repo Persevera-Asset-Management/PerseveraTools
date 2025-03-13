@@ -4,7 +4,6 @@ from .sgs import SGSProvider
 from .fred import FredProvider
 from .sidra import SidraProvider
 from .anbima import AnbimaProvider
-from .jgp import JGPProvider
 
 __all__ = [
     # Base classes
