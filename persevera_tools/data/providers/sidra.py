@@ -66,5 +66,6 @@ class SidraProvider(DataProvider):
             
         df['code'] = df['sidra_code'].map(securities_list)
         df = df.assign(field='close')
+        df = df.dropna(subset=['code'])
         
         return self._validate_output(df) 
