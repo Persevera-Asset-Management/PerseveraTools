@@ -92,13 +92,14 @@ def get_descriptors(tickers: Union[str, List[str]],
     
     # Simplify output if single ticker or descriptor
     if len(tickers) == 1 and len(descriptors) == 1:
-        return df.droplevel(['ticker', 'descriptor'], axis=1)
+        series = df.iloc[:, 0]  # Get the only column as a Series
+        series.name = descriptors[0]  # Name it with the descriptor
+        return series
     elif len(tickers) == 1:
-        return df.droplevel('ticker', axis=1)
+        return df.droplevel('ticker', axis=1).reindex(columns=descriptors)
     elif len(descriptors) == 1:
-        return df.droplevel('descriptor', axis=1)
+        return df.droplevel('descriptor', axis=1).reindex(columns=tickers)
     
-    # Reindex columns by inputed order
-    df = df.reindex(columns=tickers)
-    
-    return df
+    # For multiple tickers and descriptors, reindex to maintain input order
+    multi_idx = pd.MultiIndex.from_product([tickers, descriptors], names=['ticker', 'descriptor'])
+    return df.reindex(columns=multi_idx)

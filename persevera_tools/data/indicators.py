@@ -76,10 +76,10 @@ def get_series(code: Union[str, List[str]],
     if len(codes) > 1:
         df = df.pivot(index='date', columns='code', values='value')
         df.columns.name = None  # Remove column name
+        # Reindex columns by inputed order
+        df = df.reindex(columns=codes)
     else:
         df = df.drop(columns='code').set_index('date')
-    
-    # Reindex columns by inputed order
-    df = df.reindex(columns=codes)
+        df.columns = [codes[0]]
     
     return df
