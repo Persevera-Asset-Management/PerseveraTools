@@ -36,7 +36,7 @@ def configure_logger(
     level: int = logging.INFO,
     log_file: Optional[str] = None,
     console: bool = True,
-    format_str: str = '%(asctime)s.%(msecs)03d [%(levelname)s] %(name)s: %(message)s',
+    format_str: str = '%(asctime)s.%(msecs)03d %(name)s: %(message)s',
     date_format: str = '%Y-%m-%d %H:%M:%S'
 ) -> None:
     """
