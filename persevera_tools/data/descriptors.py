@@ -98,4 +98,7 @@ def get_descriptors(tickers: Union[str, List[str]],
     elif len(descriptors) == 1:
         return df.droplevel('descriptor', axis=1)
     
+    # Sort columns by inputed order
+    df = df.filter(tickers)
+    
     return df

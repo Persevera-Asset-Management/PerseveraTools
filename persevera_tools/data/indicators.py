@@ -79,4 +79,7 @@ def get_series(code: Union[str, List[str]],
     else:
         df = df.drop(columns='code').set_index('date')
     
+    # Sort columns by inputed order
+    df = df.filter(codes)
+    
     return df
