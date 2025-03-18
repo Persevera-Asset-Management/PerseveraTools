@@ -163,12 +163,11 @@ class BloombergProvider(DataProvider):
             df['field'] = df['field'].map(field_list)
             df = df.drop(columns='code_bloomberg')
         else:
-            fields = ["PX_LAST"]
             field_mapping = {'PX_LAST': 'close'}
             
             df = blp.bdh(
                 tickers=securities_list.keys(),
-                flds=fields,
+                flds=field_mapping.keys(),
                 start_date=self.start_date,
                 **kwargs
             )
