@@ -6,8 +6,6 @@ from .base import DataProvider, DataRetrievalError
 from ..lookups import get_raw_tickers
 from ...config import settings
 
-FRED_API_KEY = settings.FRED_API_KEY
-
 
 class FredProvider(DataProvider):
     """Provider for Federal Reserve Economic Data (FRED)."""
@@ -21,7 +19,7 @@ class FredProvider(DataProvider):
             api_key: Optional FRED API key. If not provided, uses the one from config
         """
         super().__init__(start_date)
-        self.fred = Fred(api_key=api_key or FRED_API_KEY)
+        self.fred = Fred(api_key=api_key or settings.FRED_API_KEY)
     
     def get_data(self, **kwargs) -> pd.DataFrame:
         """
