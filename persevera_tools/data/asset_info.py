@@ -34,7 +34,7 @@ def get_equities_info(
             sector_layer_0, sector_layer_1, sector_layer_2, sector_layer_3, sector_layer_4
             
     Returns:
-        DataFrame with company information
+        DataFrame with company information, with 'code' set as the index
         
     Raises:
         ValueError: If invalid fields are requested
@@ -58,6 +58,10 @@ def get_equities_info(
             'sector_layer_3', 'sector_layer_4'
         ]
         
+        # Always include 'code' field
+        if 'code' not in fields:
+            fields = ['code'] + fields
+            
         invalid_fields = [f for f in fields if f not in valid_fields]
         if invalid_fields:
             raise ValueError(f"Invalid fields requested: {invalid_fields}. "
@@ -79,4 +83,10 @@ def get_equities_info(
         query += f" WHERE code IN ({placeholders})"
         
     # Execute query
-    return read_sql(query) 
+    df = read_sql(query)
+    
+    # Set 'code' as the index
+    if not df.empty and 'code' in df.columns:
+        df = df.set_index('code')
+        
+    return df 
