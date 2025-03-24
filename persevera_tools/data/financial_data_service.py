@@ -120,7 +120,7 @@ class FinancialDataService:
                             table_name=db_table,
                             primary_keys=['code', 'date', 'field'],
                             update=True,
-                            batch_size=5000 if data_type == 'company' else None
+                            batch_size=5000
                         )
                     except Exception as e:
                         self.logger.error(f"Failed to save data to database: {str(e)}")
