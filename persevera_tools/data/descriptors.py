@@ -4,15 +4,15 @@ import pandas as pd
 
 from ..db.operations import read_sql
 
-def get_descriptors(tickers: Union[str, List[str]],
-                    descriptors: Union[str, List[str]],
+def get_descriptors(tickers: Optional[Union[str, List[str]]] = None,
+                    descriptors: Optional[Union[str, List[str]]] = None,
                     start_date: Optional[Union[str, datetime, pd.Timestamp]] = None, 
                     end_date: Optional[Union[str, datetime, pd.Timestamp]] = None) -> pd.DataFrame:
     """Get descriptors from factor_zoo table.
     
     Args:
-        tickers: Single ticker or list of tickers
-        descriptors: Single descriptor or list of descriptors (e.g., 'pe', 'ev_ebitda')
+        tickers: Optional single ticker or list of tickers. If None, returns data for all tickers.
+        descriptors: Optional single descriptor or list of descriptors (e.g., 'pe', 'ev_ebitda'). If None, returns all descriptors.
         start_date: Optional start date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp
         end_date: Optional end date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp
         
@@ -20,28 +20,34 @@ def get_descriptors(tickers: Union[str, List[str]],
         DataFrame with MultiIndex columns (ticker, descriptor) if multiple tickers and descriptors
         DataFrame with simple columns if single ticker or descriptor
         All DataFrames are indexed by date
-    """
-    # Validate tickers
-    if isinstance(tickers, str):
-        tickers = [tickers]
-    elif isinstance(tickers, list):
-        tickers = tickers
-    else:
-        raise ValueError("ticker must be a string or list of strings")
-    
-    if not all(isinstance(t, str) and t for t in tickers):
-        raise ValueError("All tickers must be non-empty strings")
-
-    # Validate descriptors
-    if isinstance(descriptors, str):
-        descriptors = [descriptors]
-    elif isinstance(descriptors, list):
-        descriptors = descriptors
-    else:
-        raise ValueError("descriptor must be a string or list of strings")
         
-    if not all(isinstance(d, str) and d for d in descriptors):
-        raise ValueError("All descriptors must be non-empty strings")
+    Raises:
+        ValueError: If both tickers and descriptors are None or empty
+    """
+    # Validate that at least one of tickers or descriptors is specified
+    if (tickers is None or (isinstance(tickers, list) and len(tickers) == 0)) and \
+       (descriptors is None or (isinstance(descriptors, list) and len(descriptors) == 0)):
+        raise ValueError("At least one of tickers or descriptors must be specified")
+
+    # Validate tickers if provided
+    if tickers is not None:
+        if isinstance(tickers, str):
+            tickers = [tickers]
+        elif isinstance(tickers, list):
+            if not all(isinstance(t, str) and t for t in tickers):
+                raise ValueError("All tickers must be non-empty strings")
+        else:
+            raise ValueError("ticker must be a string or list of strings")
+
+    # Validate descriptors if provided
+    if descriptors is not None:
+        if isinstance(descriptors, str):
+            descriptors = [descriptors]
+        elif isinstance(descriptors, list):
+            if not all(isinstance(d, str) and d for d in descriptors):
+                raise ValueError("All descriptors must be non-empty strings")
+        else:
+            raise ValueError("descriptor must be a string or list of strings")
 
     # Convert and validate dates if provided
     start_date_str = None
@@ -77,15 +83,21 @@ def get_descriptors(tickers: Union[str, List[str]],
         raise ValueError("end_date cannot be before start_date")
 
     # Build query
-    tickers_str = "','".join(tickers)
-    descriptors_str = "','".join(descriptors)
-    
-    query = f"""
+    query = """
         SELECT date, code as ticker, field as descriptor, value
         FROM factor_zoo 
-        WHERE code IN ('{tickers_str}')
-        AND field IN ('{descriptors_str}')
+        WHERE 1=1
     """
+    
+    # Add ticker filter if provided
+    if tickers is not None:
+        tickers_str = "','".join(tickers)
+        query += f" AND code IN ('{tickers_str}')"
+    
+    # Add descriptor filter if provided
+    if descriptors is not None:
+        descriptors_str = "','".join(descriptors)
+        query += f" AND field IN ('{descriptors_str}')"
     
     if start_date_str:
         query += f" AND date >= '{start_date_str}'"
@@ -97,7 +109,9 @@ def get_descriptors(tickers: Union[str, List[str]],
     df = read_sql(query, date_columns=['date'])
     
     if df.empty:
-        raise ValueError(f"No data found for ticker(s) {tickers} with descriptor(s) {descriptors}")
+        ticker_msg = f"ticker(s) {tickers}" if tickers is not None else "all tickers"
+        descriptor_msg = f"descriptor(s) {descriptors}" if descriptors is not None else "all descriptors"
+        raise ValueError(f"No data found for {ticker_msg} with {descriptor_msg}")
     
     # Pivot the data to get the desired format
     df = df.pivot_table(
@@ -107,15 +121,14 @@ def get_descriptors(tickers: Union[str, List[str]],
     )
     
     # Simplify output if single ticker or descriptor
-    if len(tickers) == 1 and len(descriptors) == 1:
+    if tickers is not None and len(tickers) == 1 and descriptors is not None and len(descriptors) == 1:
         series = df.iloc[:, 0]  # Get the only column as a Series
         series.name = descriptors[0]  # Name it with the descriptor
         return series
-    elif len(tickers) == 1:
-        return df.droplevel('ticker', axis=1).reindex(columns=descriptors)
-    elif len(descriptors) == 1:
-        return df.droplevel('descriptor', axis=1).reindex(columns=tickers)
+    elif tickers is not None and len(tickers) == 1:
+        return df.droplevel('ticker', axis=1)
+    elif descriptors is not None and len(descriptors) == 1:
+        return df.droplevel('descriptor', axis=1)
     
-    # For multiple tickers and descriptors, reindex to maintain input order
-    multi_idx = pd.MultiIndex.from_product([tickers, descriptors], names=['ticker', 'descriptor'])
-    return df.reindex(columns=multi_idx)
+    # For multiple tickers and descriptors, return the MultiIndex DataFrame
+    return df
