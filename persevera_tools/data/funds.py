@@ -3,7 +3,7 @@ import logging
 from typing import List, Optional, Union, Dict
 from datetime import datetime, date
 
-from ..db.operations import read_sql, to_sql
+from ..db.operations import read_sql
 from ..utils.logging import get_logger, timed
 
 logger = get_logger(__name__)
@@ -14,7 +14,6 @@ def get_funds_data(
     start_date: Optional[Union[str, date, datetime]] = None,
     end_date: Optional[Union[str, date, datetime]] = None,
     fields: Optional[List[str]] = None,
-    return_dataframe: bool = True
 ) -> pd.DataFrame:
     """
     Retrieve fund data from the fundos_cvm database.
@@ -26,8 +25,6 @@ def get_funds_data(
         fields: Optional list of specific fields to retrieve.
                 Available fields are: fund_nav, fund_total_equity, fund_total_value,
                 fund_inflows, fund_outflows, fund_holders
-        return_dataframe: If True, returns a DataFrame with dates as index and CNPJs as columns.
-                         If False, returns the raw query result.
     
     Returns:
         DataFrame with fund data
@@ -68,41 +65,29 @@ def get_funds_data(
     WHERE 1=1
     """
     
-    # Add filters
-    params = []
-    
+    # Add filters using string formatting like in other modules
     if cnpjs:
         if isinstance(cnpjs, str):
             cnpjs = [cnpjs]
         
-        placeholders = ', '.join(['%s'] * len(cnpjs))
-        query += f" AND fund_cnpj IN ({placeholders})"
-        params.extend(cnpjs)
+        cnpjs_str = "','".join(cnpjs)
+        query += f" AND fund_cnpj IN ('{cnpjs_str}')"
     
     if start_date:
-        query += " AND date >= %s"
-        params.append(start_date)
+        query += f" AND date >= '{start_date}'"
     
     if end_date:
-        query += " AND date <= %s"
-        params.append(end_date)
+        query += f" AND date <= '{end_date}'"
     
     # Order the results
     query += " ORDER BY date, fund_cnpj"
     
-    # Execute query with parameters
-    if params:
-        query = read_sql(query, date_columns=['date'])
-    else:
-        query = read_sql(query, date_columns=['date'])
+    # Execute query
+    df = read_sql(query, date_columns=['date'])
     
-    if query.empty:
+    if df.empty:
         logger.warning("No fund data found with the specified filters")
         return pd.DataFrame()
-    
-    # Return raw query result if requested
-    if not return_dataframe:
-        return query
     
     # Process the result into a multi-index DataFrame if multiple fields were requested
     if (fields is None) or (len(fields) > 1):
@@ -111,8 +96,8 @@ def get_funds_data(
         
         for field in (fields or all_columns.keys()):
             field_name = all_columns[field]
-            if field_name in query.columns:
-                pivot = query.pivot(index='date', columns='fund_cnpj', values=field_name)
+            if field_name in df.columns:
+                pivot = df.pivot(index='date', columns='fund_cnpj', values=field_name)
                 result_dfs[field] = pivot
         
         # Create a multi-index DataFrame
@@ -123,7 +108,7 @@ def get_funds_data(
     # If only one field was requested, return a simple pivoted DataFrame
     else:
         field_name = all_columns[fields[0]]
-        return query.pivot(index='date', columns='fund_cnpj', values=field_name)
+        return df.pivot(index='date', columns='fund_cnpj', values=field_name)
 
 @timed
 def get_persevera_peers(
@@ -151,33 +136,26 @@ def get_persevera_peers(
     WHERE 1=1
     """
     
-    # Add filters
-    params = []
-    
+    # Add filters using string formatting like in other modules
     if persevera_group:
         if isinstance(persevera_group, str):
             persevera_group = [persevera_group]
         
-        placeholders = ', '.join(['%s'] * len(persevera_group))
-        query += f" AND persevera_group IN ({placeholders})"
-        params.extend(persevera_group)
+        groups_str = "','".join(persevera_group)
+        query += f" AND persevera_group IN ('{groups_str}')"
     
     if cnpjs:
         if isinstance(cnpjs, str):
             cnpjs = [cnpjs]
         
-        placeholders = ', '.join(['%s'] * len(cnpjs))
-        query += f" AND fund_cnpj IN ({placeholders})"
-        params.extend(cnpjs)
+        cnpjs_str = "','".join(cnpjs)
+        query += f" AND fund_cnpj IN ('{cnpjs_str}')"
     
     # Order the results
     query += " ORDER BY persevera_group, short_name"
     
-    # Execute query with parameters
-    if params:
-        df = read_sql(query)
-    else:
-        df = read_sql(query)
+    # Execute query
+    df = read_sql(query)
     
     if df.empty:
         logger.warning("No persevera peer funds found with the specified filters")
