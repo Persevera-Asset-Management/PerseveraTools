@@ -23,14 +23,43 @@ class SGSProvider(DataProvider):
         securities_list = get_raw_tickers(source='sgs')
         df = pd.DataFrame()
         
+        from datetime import datetime, timedelta
+        
         for code in securities_list.keys():
             try:
-                r = requests.get(f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{code}/dados?formato=json")
-                temp = pd.DataFrame(r.json())
+                # First try without date parameters
+                url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{code}/dados?formato=json"
+                r = requests.get(url)
+                
+                # Check if we need date parameters (daily series constraint)
+                if r.status_code != 200:
+                    error_data = r.json() if r.text else {}
+                    error_msg = error_data.get('error', '')
+                    
+                    # If it's a daily series with date constraint, retry with date parameters
+                    if 'periodicidade diária' in error_msg:
+                        end_date = datetime.now().strftime('%d/%m/%Y')
+                        start_date = (datetime.now() - timedelta(days=3650)).strftime('%d/%m/%Y')  # ~10 years
+                        url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{code}/dados?formato=json&dataInicial={start_date}&dataFinal={end_date}"
+                        r = requests.get(url)
+                    else:
+                        self.logger.warning(f"Failed to retrieve data for code {code}: {error_msg}")
+                        continue
+                
+                if r.status_code != 200:
+                    self.logger.warning(f"Failed to retrieve data for code {code}: HTTP {r.status_code}")
+                    continue
+                
+                data = r.json()
+                if not data:
+                    self.logger.warning(f"No data returned for code {code}")
+                    continue
+                
+                temp = pd.DataFrame(data)
                 temp.columns = ['date', 'value']
                 temp['sgs_code'] = code
                 df = pd.concat([df, temp], ignore_index=True)
-            except ValueError as e:
+            except Exception as e:
                 self.logger.warning(f"Failed to retrieve data for code {code}: {str(e)}")
                 continue
                 
