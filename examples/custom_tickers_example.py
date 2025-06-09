@@ -10,7 +10,7 @@ fds = FinancialDataService(start_date='2025-05-01')
 
 simplify_data = fds.get_data(
     source='simplify',
-    save_to_db=False,
+    save_to_db=True,
 )
 
 print(simplify_data)

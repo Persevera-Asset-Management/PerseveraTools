@@ -53,7 +53,7 @@ class SimplifyProvider(DataProvider):
             df = df.iloc[:index_last]
             df['date'] = date
 
-            df.columns = ['name', 'weight', 'est_initial_margin', 'vol_contribution', 'date']
+            df.columns = ['name', 'cta_weight', 'est_initial_margin', 'cta_vol_contribution', 'date']
             df = df.drop(columns=['est_initial_margin'])
             
             df = df.melt(id_vars=['name', 'date'], var_name='field', value_name='value')
