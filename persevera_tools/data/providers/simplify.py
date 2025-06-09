@@ -110,7 +110,21 @@ class SimplifyProvider(DataProvider):
         # Convert name to code
         query = "SELECT * FROM indicadores_cta"
         df_cta_depara = read_sql(query)
-        final_df['code'] = final_df['name'].map(df_cta_depara.set_index('name')['code'].to_dict())
+        code_map = df_cta_depara.set_index('name')['code'].to_dict()
+
+        # Find and warn about names that are in the data but not in our mapping table
+        all_names_in_data = set(final_df['name'].unique())
+        all_names_in_map = set(code_map.keys())
+        unmapped_names = all_names_in_data - all_names_in_map
+
+        if unmapped_names:
+            for name in sorted(list(unmapped_names)):
+                self.logger.warning(f"Code not found for name: '{name}'. Corresponding entries will be dropped.")
+            
+            # Filter out rows with unmapped names
+            final_df = final_df[~final_df['name'].isin(unmapped_names)].copy()
+
+        final_df['code'] = final_df['name'].map(code_map)
         final_df = final_df.drop(columns=['name'])
         
         return self._validate_output(final_df)
