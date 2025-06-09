@@ -4,6 +4,7 @@ from .sgs import SGSProvider
 from .fred import FredProvider
 from .sidra import SidraProvider
 from .anbima import AnbimaProvider
+from .simplify import SimplifyProvider
 
 __all__ = [
     # Base classes
@@ -11,5 +12,5 @@ __all__ = [
     
     # Provider implementations
     'BloombergProvider', 'SGSProvider', 'FredProvider', 'SidraProvider', 
-    'AnbimaProvider'
+    'AnbimaProvider', 'SimplifyProvider'
 ] 

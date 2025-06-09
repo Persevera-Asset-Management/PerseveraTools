@@ -141,7 +141,7 @@ class FinancialDataService:
     
     def get_data(
         self,
-        source: Literal['sgs', 'fred', 'sidra', 'anbima'],
+        source: Literal['sgs', 'fred', 'sidra', 'anbima', 'simplify'],
         save_to_db: bool = True,
         retry_attempts: int = 3,
         table_name: Optional[str] = None,
