@@ -13,6 +13,7 @@ setup(
         "xbbg",
         "sidrapy",
         "fredapi",
-        "python-bcb"
+        "python-bcb",
+        "requests"
     ],
 )

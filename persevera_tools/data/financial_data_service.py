@@ -8,6 +8,7 @@ from .providers.sgs import SGSProvider
 from .providers.fred import FredProvider
 from .providers.sidra import SidraProvider
 from .providers.anbima import AnbimaProvider
+from .providers.simplify import SimplifyProvider
 from ..db.operations import to_sql
 
 logger = logging.getLogger(__name__)
@@ -44,6 +45,7 @@ class FinancialDataService:
         self.fred = FredProvider(start_date=start_date, api_key=fred_api_key)
         self.sidra = SidraProvider(start_date=start_date)
         self.anbima = AnbimaProvider(start_date=start_date)
+        self.simplify = SimplifyProvider(start_date=start_date)
         self.logger = logging.getLogger(self.__class__.__name__)
         
     def get_bloomberg_data(
@@ -168,6 +170,7 @@ class FinancialDataService:
             'fred': (self.fred, 'indicadores'),
             'sidra': (self.sidra, 'indicadores'),
             'anbima': (self.anbima, 'indicadores'),
+            'simplify': (self.simplify, 'indicadores'),
         }
         
         if source not in providers:
