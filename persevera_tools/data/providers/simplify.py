@@ -6,6 +6,7 @@ import requests
 from datetime import datetime
 
 from .base import DataProvider, DataRetrievalError
+from ...db.operations import read_sql
 
 
 class SimplifyProvider(DataProvider):
@@ -52,10 +53,10 @@ class SimplifyProvider(DataProvider):
             df = df.iloc[:index_last]
             df['date'] = date
 
-            df.columns = ['code', 'weight', 'est_initial_margin', 'vol_contribution', 'date']
+            df.columns = ['name', 'weight', 'est_initial_margin', 'vol_contribution', 'date']
             df = df.drop(columns=['est_initial_margin'])
             
-            df = df.melt(id_vars=['code', 'date'], var_name='field', value_name='value')
+            df = df.melt(id_vars=['name', 'date'], var_name='field', value_name='value')
             
             self.logger.info(f"Successfully extracted table for {date.strftime('%Y-%m-%d')}. Shape: {df.shape}")
             return df
@@ -105,6 +106,12 @@ class SimplifyProvider(DataProvider):
             raise DataRetrievalError("No data retrieved from Simplify for the given date range.")
             
         final_df = pd.concat(all_data, ignore_index=True)
+
+        # Convert name to code
+        query = "SELECT * FROM indicadores_cta"
+        df_cta_depara = read_sql(query)
+        final_df['code'] = final_df['name'].map(df_cta_depara.set_index('name')['code'].to_dict())
+        final_df = final_df.drop(columns=['name'])
         
         return self._validate_output(final_df)
 
