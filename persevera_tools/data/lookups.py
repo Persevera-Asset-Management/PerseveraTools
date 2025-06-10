@@ -13,12 +13,10 @@ def get_bloomberg_codes(sheet_name: str, category: str) -> Dict[str, str]:
     df = df.set_index('bloomberg_code')
     return df['mnemonic'].to_dict()
 
-def get_raw_tickers(source: str, category: Optional[str] = None) -> Dict[str, str]:
-    """Get raw tickers from cadastro-base.xlsx."""
-    df = pd.read_excel(os.path.join(settings.DATA_PATH, "cadastro-base.xlsx"), sheet_name='indicators')
-    df = df[df['source'] == source]
+def get_codes(source: str, category: Optional[str] = None) -> Dict[str, str]:
+    """Get codes from indicadores_definicoes table."""
+    df = read_sql(f"SELECT * FROM indicadores_definicoes WHERE source = '{source}'")
     df = df[df['category'] == category] if category else df
-    df = df.filter(['raw_code', 'code'])
     df = df.set_index('raw_code')
     return df['code'].to_dict()
 

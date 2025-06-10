@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 
 from .base import DataProvider, DataRetrievalError
-from ..lookups import get_raw_tickers
+from ..lookups import get_codes
 
 class SGSProvider(DataProvider):
     """Provider for Brazilian Central Bank (SGS) data."""
@@ -20,7 +20,7 @@ class SGSProvider(DataProvider):
         """
         self._log_processing('sgs')
         
-        securities_list = get_raw_tickers(source='sgs')
+        securities_list = get_codes(source='sgs')
         df = pd.DataFrame()
         
         from datetime import datetime, timedelta

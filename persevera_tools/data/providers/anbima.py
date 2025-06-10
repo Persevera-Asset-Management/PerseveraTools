@@ -3,10 +3,14 @@ import pandas as pd
 import os
 import glob
 import urllib.request
+import warnings
 
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_url
 from ...config import settings
+
+# Suppress openpyxl warning about workbooks without default styles
+warnings.filterwarnings("ignore", message="Workbook contains no default style", category=UserWarning)
 
 DATA_PATH = settings.DATA_PATH
 
@@ -29,14 +33,6 @@ class AnbimaProvider(DataProvider):
         """
         self._log_processing('anbima')
         
-        # Create directory if it doesn't exist
-        # anbima_dir = os.path.join(DATA_PATH, 'anbima')
-        # os.makedirs(anbima_dir, exist_ok=True)
-        
-        # if download_new:
-        #     self._download_anbima_files(anbima_dir)
-            
-        # df = self._process_anbima_files(anbima_dir)
         df = self._read_anbima_files()
         
         if df.empty:
@@ -44,6 +40,29 @@ class AnbimaProvider(DataProvider):
             
         return self._validate_output(df)
     
+    def _read_anbima_files(self) -> pd.DataFrame:
+        """Read ANBIMA files from URL."""
+        securities_list = get_url("anbima")
+        df = pd.DataFrame(columns=['code', 'date', 'value'])
+
+        for index_name, url in securities_list.items():
+            try:
+                self.logger.info(f"Reading {index_name} from {url}")
+                try:
+                    temp = pd.read_excel(url, usecols="B:C", engine="openpyxl")
+                except:
+                    temp = pd.read_excel(url, usecols="B:C", engine="xlrd")
+                    
+                temp.columns = ['date', 'value']
+                temp['code'] = index_name
+                df = pd.concat([df, temp], ignore_index=True)
+                
+            except Exception as e:
+                self.logger.warning(f"Failed to process {index_name}: {str(e)}")
+                
+        df = df.assign(field='close')
+        return df
+
     def _download_anbima_files(self, directory: str) -> None:
         """Download ANBIMA files to the specified directory."""
         securities_list = get_url("anbima")
@@ -80,26 +99,3 @@ class AnbimaProvider(DataProvider):
                 
         df = df.assign(field='close')
         return df
-
-    def _read_anbima_files(self) -> pd.DataFrame:
-        """Read ANBIMA files from URL."""
-        securities_list = get_url("anbima")
-        df = pd.DataFrame(columns=['code', 'date', 'value'])
-
-        for index_name, url in securities_list.items():
-            try:
-                self.logger.info(f"Reading {index_name} from {url}")
-                try:
-                    temp = pd.read_excel(url, usecols="B:C", engine="openpyxl")
-                except:
-                    temp = pd.read_excel(url, usecols="B:C", engine="xlrd")
-                    
-                temp.columns = ['date', 'value']
-                temp['code'] = index_name
-                df = pd.concat([df, temp], ignore_index=True)
-                
-            except Exception as e:
-                self.logger.warning(f"Failed to process {index_name}: {str(e)}")
-                
-        df = df.assign(field='close')
-        return df 

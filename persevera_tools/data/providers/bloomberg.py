@@ -7,7 +7,7 @@ import os
 from xbbg import blp
 
 from .base import DataProvider, DataRetrievalError
-from ..lookups import get_raw_tickers, get_bloomberg_codes
+from ..lookups import get_codes, get_bloomberg_codes
 from ..asset_info import get_securities_by_exchange
 from ...config import settings
 
@@ -141,7 +141,7 @@ class BloombergProvider(DataProvider):
         elif category in self.tickers_mapping:
             securities_list = self.tickers_mapping[category]
         else:
-            securities_list = get_raw_tickers(source='bloomberg', category=category)
+            securities_list = get_codes(source='bloomberg', category=category)
         
         if additional_fields:
             if custom_fields:

@@ -3,7 +3,7 @@ import pandas as pd
 from fredapi import Fred
 
 from .base import DataProvider, DataRetrievalError
-from ..lookups import get_raw_tickers
+from ..lookups import get_codes
 from ...config import settings
 
 FRED_API_KEY = settings.FRED_API_KEY
@@ -31,7 +31,7 @@ class FredProvider(DataProvider):
         """
         self._log_processing('fred')
         
-        securities_list = get_raw_tickers(source='fred')
+        securities_list = get_codes(source='fred')
         
         try:
             df = pd.DataFrame({

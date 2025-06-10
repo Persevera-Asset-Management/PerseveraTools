@@ -1,6 +1,6 @@
 from .lookups import (
     get_bloomberg_codes,
-    get_raw_tickers,
+    get_codes,
     get_url
 )
 from .asset_info import (
@@ -16,7 +16,7 @@ from .funds import get_funds_data, get_persevera_peers
 __all__ = [
     'get_bloomberg_codes',
     'get_securities_by_exchange',
-    'get_raw_tickers',
+    'get_codes',
     'get_url',
     'get_series',
     'get_descriptors',

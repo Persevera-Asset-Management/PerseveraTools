@@ -4,7 +4,7 @@ import numpy as np
 import sidrapy
 
 from .base import DataProvider, DataRetrievalError
-from ..lookups import get_raw_tickers
+from ..lookups import get_codes
 
 class SidraProvider(DataProvider):
     """Provider for IBGE's SIDRA data."""
@@ -34,7 +34,7 @@ class SidraProvider(DataProvider):
         self._log_processing('sidra')
         
         tables = tables or self.DEFAULT_TABLES
-        securities_list = get_raw_tickers(source='sidra')
+        securities_list = get_codes(source='sidra')
         df = pd.DataFrame()
         
         for code in tables.keys():
