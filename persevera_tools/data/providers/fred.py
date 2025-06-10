@@ -8,7 +8,6 @@ from ...config import settings
 
 FRED_API_KEY = settings.FRED_API_KEY
 
-
 class FredProvider(DataProvider):
     """Provider for Federal Reserve Economic Data (FRED)."""
     
