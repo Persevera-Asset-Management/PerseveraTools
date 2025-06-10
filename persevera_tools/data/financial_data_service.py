@@ -23,7 +23,6 @@ class FinancialDataService:
         fred_api_key: Optional[str] = None,
         bloomberg_tickers_mapping: Optional[Dict[str, Dict[str, str]]] = None,
         bloomberg_fields_mapping: Optional[Dict[str, Dict[str, str]]] = None,
-        company_fields_file: Optional[str] = None
     ):
         """
         Initialize the financial data service.
@@ -33,13 +32,11 @@ class FinancialDataService:
             fred_api_key: Optional API key for FRED
             bloomberg_tickers_mapping: Optional custom mapping of Bloomberg tickers to internal codes
             bloomberg_fields_mapping: Optional custom mapping of Bloomberg fields to internal fields
-            company_fields_file: Optional path to Excel file with company field mappings
         """
         self.bloomberg = BloombergProvider(
             start_date=start_date,
             tickers_mapping=bloomberg_tickers_mapping,
             fields_mapping=bloomberg_fields_mapping,
-            company_fields_file=company_fields_file
         )
         self.sgs = SGSProvider(start_date=start_date)
         self.fred = FredProvider(start_date=start_date, api_key=fred_api_key)

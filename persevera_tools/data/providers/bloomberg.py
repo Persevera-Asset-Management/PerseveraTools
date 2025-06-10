@@ -10,6 +10,7 @@ from .base import DataProvider, DataRetrievalError
 from ..lookups import get_codes, get_bloomberg_codes
 from ..asset_info import get_securities_by_exchange
 from ...config import settings
+from ...db.operations import read_sql
 
 DATA_PATH = settings.DATA_PATH
 
@@ -34,7 +35,6 @@ class BloombergProvider(DataProvider):
         start_date: str = '1980-01-01',
         tickers_mapping: Optional[Dict[str, Dict[str, str]]] = None,
         fields_mapping: Optional[Dict[str, Dict[str, str]]] = None,
-        company_fields_file: Optional[str] = None
     ):
         """
         Initialize the Bloomberg data provider.
@@ -45,28 +45,20 @@ class BloombergProvider(DataProvider):
                             Format: {'category': {'bloomberg_ticker': 'internal_code', ...}, ...}
             fields_mapping: Optional custom mapping of Bloomberg fields to internal fields
                            Format: {'category': {'bloomberg_field': 'internal_field', ...}, ...}
-            company_fields_file: Optional path to Excel file with company field mappings
         """
         super().__init__(start_date)
         self.tickers_mapping = tickers_mapping or {}
         self.fields_mapping = fields_mapping or {}
-        self.company_fields_file = company_fields_file
         self._load_field_mappings()
         
     def _load_field_mappings(self) -> None:
         """Load field mappings from the configuration file."""
         try:
-            file_path = self.company_fields_file or os.path.join(DATA_PATH, "cadastro-base.xlsx")
-            if os.path.exists(file_path):
-                base = pd.read_excel(file_path, sheet_name='equity_signals')
-                self.field_mappings = base.groupby('category').apply(
-                    lambda x: x.set_index('bloomberg_code')['mnemonic'].to_dict()
-                ).to_dict()
-                self.frequencies = base.groupby('category')['frequency'].first().to_dict()
-            else:
-                self.logger.warning(f"Field mappings file not found: {file_path}")
-                self.field_mappings = {}
-                self.frequencies = {}
+            base = read_sql(f"SELECT * FROM factor_zoo_equity_signals")
+            self.field_mappings = base.groupby('category').apply(
+                lambda x: x.set_index('bloomberg_code')['mnemonic'].to_dict()
+            ).to_dict()
+            self.frequencies = base.groupby('category')['frequency'].first().to_dict()
         except Exception as e:
             raise DataRetrievalError(f"Failed to load field mappings: {str(e)}")
 
