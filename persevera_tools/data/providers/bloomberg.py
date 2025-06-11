@@ -17,7 +17,7 @@ DATA_PATH = settings.DATA_PATH
 DataCategory = Literal[
     # Market data categories
     'positions_cftc', 'macro', 'commodity', 'currency', 'equity',
-    # Company data categories - these will be loaded from Excel
+    # Company data categories
     'valuation', 'fundamentals', 'index_weight'
 ]
 

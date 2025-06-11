@@ -9,6 +9,7 @@ from .providers.fred import FredProvider
 from .providers.sidra import SidraProvider
 from .providers.anbima import AnbimaProvider
 from .providers.simplify import SimplifyProvider
+from .providers.cvm import CVMProvider
 from ..db.operations import to_sql
 
 logger = logging.getLogger(__name__)
@@ -43,6 +44,7 @@ class FinancialDataService:
         self.sidra = SidraProvider(start_date=start_date)
         self.anbima = AnbimaProvider(start_date=start_date)
         self.simplify = SimplifyProvider(start_date=start_date)
+        self.cvm = CVMProvider(start_date=start_date)
         self.logger = logging.getLogger(self.__class__.__name__)
         
     def get_bloomberg_data(
@@ -138,6 +140,65 @@ class FinancialDataService:
         self.logger.error(error_msg)
         raise RuntimeError(error_msg)
     
+    def get_cvm_data(
+        self,
+        cnpjs: Optional[List[str]] = None,
+        save_to_db: bool = True,
+        retry_attempts: int = 3,
+        table_name: str = 'fundos_cvm'
+    ) -> pd.DataFrame:
+        """
+        Retrieve daily fund data from CVM.
+        
+        Args:
+            cnpjs: List of fund CNPJs to retrieve.
+            save_to_db: Whether to save the data to the database.
+            retry_attempts: Number of retry attempts.
+            table_name: The database table name to store CVM data.
+            
+        Returns:
+            DataFrame with CVM data.
+        """
+        self.logger.info(f"Retrieving data from CVM" + (f" for {len(cnpjs)} CNPJs" if cnpjs else ""))
+        
+        attempt = 0
+        last_error = None
+        
+        while attempt < retry_attempts:
+            try:
+                df = self.cvm.get_data(cnpjs=cnpjs)
+                
+                if df.empty:
+                    self.logger.warning(f"No data retrieved from CVM")
+                    return df
+                
+                if save_to_db:
+                    self.logger.info(f"Saving {len(df)} rows to table '{table_name}'")
+                    try:
+                        to_sql(
+                            data=df,
+                            table_name=table_name,
+                            primary_keys=['fund_cnpj', 'date'],
+                            update=True,
+                            batch_size=5000
+                        )
+                    except Exception as e:
+                        self.logger.error(f"Failed to save data to database: {str(e)}")
+                        raise
+                
+                return df
+                
+            except Exception as e:
+                attempt += 1
+                last_error = e
+                self.logger.warning(f"Attempt {attempt} failed: {str(e)}")
+                if attempt < retry_attempts:
+                    self.logger.info(f"Retrying... ({attempt}/{retry_attempts})")
+        
+        error_msg = f"Failed to retrieve data from CVM after {retry_attempts} attempts. Last error: {str(last_error)}"
+        self.logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
     def get_data(
         self,
         source: Literal['sgs', 'fred', 'sidra', 'anbima', 'simplify'],
