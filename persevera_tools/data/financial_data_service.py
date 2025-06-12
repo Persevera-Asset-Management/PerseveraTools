@@ -9,6 +9,7 @@ from .providers.fred import FredProvider
 from .providers.sidra import SidraProvider
 from .providers.anbima import AnbimaProvider
 from .providers.simplify import SimplifyProvider
+from .providers.invesco import InvescoProvider
 from .providers.cvm import CVMProvider
 from ..db.operations import to_sql
 
@@ -44,6 +45,7 @@ class FinancialDataService:
         self.sidra = SidraProvider(start_date=start_date)
         self.anbima = AnbimaProvider(start_date=start_date)
         self.simplify = SimplifyProvider(start_date=start_date)
+        self.invesco = InvescoProvider(start_date=start_date)
         self.cvm = CVMProvider(start_date=start_date)
         self.logger = logging.getLogger(self.__class__.__name__)
         
@@ -201,7 +203,7 @@ class FinancialDataService:
 
     def get_data(
         self,
-        source: Literal['sgs', 'fred', 'sidra', 'anbima', 'simplify'],
+        source: Literal['sgs', 'fred', 'sidra', 'anbima', 'simplify', 'invesco'],
         save_to_db: bool = True,
         retry_attempts: int = 3,
         table_name: Optional[str] = None,
@@ -229,6 +231,7 @@ class FinancialDataService:
             'sidra': (self.sidra, 'indicadores'),
             'anbima': (self.anbima, 'indicadores'),
             'simplify': (self.simplify, 'indicadores'),
+            'invesco': (self.invesco, 'indicadores'),
         }
         
         if source not in providers:

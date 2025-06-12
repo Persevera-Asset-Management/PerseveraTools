@@ -6,6 +6,7 @@ from .sidra import SidraProvider
 from .anbima import AnbimaProvider
 from .simplify import SimplifyProvider
 from .cvm import CVMProvider
+from .invesco import InvescoProvider
 
 __all__ = [
     # Base classes
@@ -13,5 +14,5 @@ __all__ = [
     
     # Provider implementations
     'BloombergProvider', 'SGSProvider', 'FredProvider', 'SidraProvider', 
-    'AnbimaProvider', 'SimplifyProvider', 'CVMProvider'
+    'AnbimaProvider', 'SimplifyProvider', 'CVMProvider', 'InvescoProvider'
 ] 

@@ -18,6 +18,11 @@ simplify_data = fds.get_data(
     save_to_db=True,
 )
 
+invesco_data = fds.get_data(
+    source='invesco',
+    save_to_db=True,
+)
+
 cnpjs = get_persevera_peers().fund_cnpj.drop_duplicates().tolist()
 cvm_data = fds.get_cvm_data(
     cnpjs=cnpjs,
