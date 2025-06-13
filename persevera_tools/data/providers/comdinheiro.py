@@ -4,14 +4,14 @@ from datetime import datetime
 from urllib.parse import urlencode
 
 from .base import DataProvider, DataRetrievalError
+from ...config import settings
 
+COMDINHEIRO_USERNAME = settings.COMDINHEIRO_USERNAME
+COMDINHEIRO_PASSWORD = settings.COMDINHEIRO_PASSWORD
 
 class ComdinheiroProvider(DataProvider):
     """Provider for Comdinheiro data."""
 
-    # It is recommended to use environment variables for credentials.
-    USERNAME = "persevera_asset"
-    PASSWORD = "ymr0pzr_xwa5wku5NMQ"  # This should not be hardcoded.
     API_URL = "https://api.comdinheiro.com.br/v1/ep1/import-data"
     HEADERS = {'Content-Type': 'application/x-www-form-urlencoded'}
 
@@ -35,8 +35,8 @@ class ComdinheiroProvider(DataProvider):
         report_url = "RelatorioGerencialCarteiras001.php?" + urlencode(report_url_params)
 
         payload_params = {
-            "username": self.USERNAME,
-            "password": self.PASSWORD,
+            "username": COMDINHEIRO_USERNAME,
+            "password": COMDINHEIRO_PASSWORD,
             "URL": report_url,
             "format": "json3",
         }
