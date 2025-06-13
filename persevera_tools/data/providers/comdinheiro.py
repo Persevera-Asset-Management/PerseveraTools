@@ -72,7 +72,7 @@ class ComdinheiroProvider(DataProvider):
             **kwargs: Additional arguments.
 
         Returns:
-            pd.DataFrame: DataFrame with columns: ['date', 'code', 'field', 'value']
+            pd.DataFrame: DataFrame
         """
         self._log_processing(category)
 
@@ -89,6 +89,7 @@ class ComdinheiroProvider(DataProvider):
                 "ativo": "ativo",
                 "desc": "descricao",
                 "saldo_bruto": "saldo_bruto",
+                "instituicao_financeira": "instituicao_financeira",
                 "tipo_ativo": "tipo_ativo"
             }
             
