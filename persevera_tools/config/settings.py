@@ -29,6 +29,10 @@ class Settings:
         # Load FRED API key
         self.FRED_API_KEY = os.getenv('PERSEVERA_FRED_API_KEY')
 
+        # Load Comdinheiro credentials
+        self.COMDINHEIRO_USERNAME = os.getenv('PERSEVERA_COMDINHEIRO_USERNAME')
+        self.COMDINHEIRO_PASSWORD = os.getenv('PERSEVERA_COMDINHEIRO_PASSWORD')
+
         # Load logging configuration with environment variable overrides
         self.LOG_CONFIG = DEFAULT_CONFIG['LOG_CONFIG'].copy()
         

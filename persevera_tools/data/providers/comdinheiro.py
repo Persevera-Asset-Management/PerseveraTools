@@ -83,30 +83,27 @@ class ComdinheiroProvider(DataProvider):
             if not portfolios or not date_str:
                 raise ValueError("`portfolios` and `date_str` must be provided for 'portfolio_positions'")
 
-            variable_names = ["nome_portfolio", "ativo", "desc", "saldo_bruto"]
+            variable_names = {
+                "data_analise": "date",
+                "nome_portfolio": "carteira",
+                "ativo": "ativo",
+                "desc": "descricao",
+                "saldo_bruto": "saldo_bruto",
+                "tipo_ativo": "tipo_ativo"
+            }
             
-            raw_df = self._fetch_positions(date_str, portfolios, variable_names)
+            df = self._fetch_positions(date_str, portfolios, variable_names.keys())
 
-            if raw_df.empty:
+            if df.empty:
                 return pd.DataFrame()
 
-            raw_df['date'] = pd.to_datetime(date_str, format='%d%m%Y')
-            
-            # We are interested in saldo_bruto, which is a numeric value.
-            # Other fields like 'desc' are descriptive.
-            
-            # Ensure saldo_bruto is numeric, coerce errors will turn non-numerics into NaT
-            raw_df['saldo_bruto'] = pd.to_numeric(raw_df['saldo_bruto'], errors='coerce')
-            raw_df.dropna(subset=['saldo_bruto'], inplace=True)
-            
-            df = raw_df.rename(columns={
-                'ativo': 'code',
-                'saldo_bruto': 'value'
-            })
-            
-            df['field'] = 'saldo_bruto'
+            df.columns = variable_names.values()
+            df['date'] = pd.to_datetime(df['date'])
 
-            return self._validate_output(df[['date', 'code', 'field', 'value']])
+            if 'saldo_bruto' in df.columns:
+                df['saldo_bruto'] = pd.to_numeric(df['saldo_bruto'], errors='coerce')
+            
+            return df
         
         else:
             raise NotImplementedError(f"Category '{category}' not supported for Comdinheiro provider.")
