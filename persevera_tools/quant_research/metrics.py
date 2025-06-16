@@ -1,0 +1,1 @@
+# Este arquivo conterá funções relacionadas a métricas de performance. 
