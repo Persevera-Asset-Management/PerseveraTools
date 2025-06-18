@@ -11,6 +11,7 @@ from .providers.anbima import AnbimaProvider
 from .providers.simplify import SimplifyProvider
 from .providers.invesco import InvescoProvider
 from .providers.cvm import CVMProvider
+from .providers.bcb_focus import BcbFocusProvider
 from ..db.operations import to_sql
 
 logger = logging.getLogger(__name__)
@@ -47,6 +48,7 @@ class FinancialDataService:
         self.simplify = SimplifyProvider(start_date=start_date)
         self.invesco = InvescoProvider(start_date=start_date)
         self.cvm = CVMProvider(start_date=start_date)
+        self.bcb_focus = BcbFocusProvider(start_date=start_date)
         self.logger = logging.getLogger(self.__class__.__name__)
         
     def get_bloomberg_data(
@@ -203,7 +205,7 @@ class FinancialDataService:
 
     def get_data(
         self,
-        source: Literal['sgs', 'fred', 'sidra', 'anbima', 'simplify', 'invesco'],
+        source: Literal['sgs', 'fred', 'sidra', 'anbima', 'simplify', 'invesco', 'bcb_focus'],
         save_to_db: bool = True,
         retry_attempts: int = 3,
         table_name: Optional[str] = None,
@@ -232,6 +234,7 @@ class FinancialDataService:
             'anbima': (self.anbima, 'indicadores'),
             'simplify': (self.simplify, 'indicadores'),
             'invesco': (self.invesco, 'indicadores'),
+            'bcb_focus': (self.bcb_focus, 'indicadores'),
         }
         
         if source not in providers:
