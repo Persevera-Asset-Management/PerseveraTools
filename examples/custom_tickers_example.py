@@ -33,3 +33,10 @@ cvm_data = fds.get_cvm_data(
     cnpjs=cnpjs,
     save_to_db=True
 )
+
+from persevera_tools.data.providers.sgs import SGSProvider
+sgs_provider = SGSProvider()
+sgs_data = sgs_provider.get_data()
+
+sgs_data.to_csv('sgs_data.csv', index=False)
+from persevera_tools.data.lookups import get_codes

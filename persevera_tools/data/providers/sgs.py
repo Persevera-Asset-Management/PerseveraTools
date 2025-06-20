@@ -24,8 +24,6 @@ class SGSProvider(DataProvider):
         securities_list = get_codes(source='sgs')
         df = pd.DataFrame()
         
-        from datetime import datetime, timedelta
-        
         for code in securities_list.keys():
             try:
                 # First try without date parameters
@@ -39,6 +37,7 @@ class SGSProvider(DataProvider):
                     
                     # If it's a daily series with date constraint, retry with date parameters
                     if 'periodicidade diária' in error_msg:
+                        self.logger.warning(f"Failed to retrieve monthly data for code {code}: {error_msg}. Trying with daily frequency.")
                         end_date = datetime.now().strftime('%d/%m/%Y')
                         start_date = (datetime.now() - timedelta(days=365*7)).strftime('%d/%m/%Y')
                         url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{code}/dados?formato=json&dataInicial={start_date}&dataFinal={end_date}"
@@ -67,7 +66,7 @@ class SGSProvider(DataProvider):
         if df.empty:
             raise DataRetrievalError("No data retrieved from SGS")
             
-        df['code'] = df['sgs_code'].astype(int).map(securities_list)
+        df['code'] = df['sgs_code'].map(securities_list)
         df['date'] = pd.to_datetime(df['date'], format='%d/%m/%Y')
         df = df.assign(field='close')
         df = df.drop(columns=['sgs_code'])
