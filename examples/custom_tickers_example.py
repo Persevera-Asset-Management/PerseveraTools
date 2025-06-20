@@ -25,7 +25,7 @@ invesco_data = fds.get_data(
 
 bcb_focus_data = fds.get_data(
     source='bcb_focus',
-    save_to_db=True
+    save_to_db=False
 )
 
 cnpjs = get_persevera_peers().fund_cnpj.drop_duplicates().tolist()

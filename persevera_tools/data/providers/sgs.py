@@ -1,6 +1,7 @@
 from typing import Dict, Optional
 import pandas as pd
 import requests
+from datetime import datetime, timedelta
 
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_codes
@@ -39,7 +40,7 @@ class SGSProvider(DataProvider):
                     # If it's a daily series with date constraint, retry with date parameters
                     if 'periodicidade diária' in error_msg:
                         end_date = datetime.now().strftime('%d/%m/%Y')
-                        start_date = (datetime.now() - timedelta(days=3650)).strftime('%d/%m/%Y')  # ~10 years
+                        start_date = (datetime.now() - timedelta(days=365*7)).strftime('%d/%m/%Y')
                         url = f"https://api.bcb.gov.br/dados/serie/bcdata.sgs.{code}/dados?formato=json&dataInicial={start_date}&dataFinal={end_date}"
                         r = requests.get(url)
                     else:
