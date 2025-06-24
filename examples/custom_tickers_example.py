@@ -34,9 +34,7 @@ cvm_data = fds.get_cvm_data(
     save_to_db=True
 )
 
-from persevera_tools.data.providers.sgs import SGSProvider
-sgs_provider = SGSProvider()
-sgs_data = sgs_provider.get_data()
-
-sgs_data.to_csv('sgs_data.csv', index=False)
-from persevera_tools.data.lookups import get_codes
+from persevera_tools.data.providers.kraneshares import KraneSharesProvider
+kraneshares_provider = KraneSharesProvider()
+self = kraneshares_provider
+kraneshares_data = kraneshares_provider.get_data()

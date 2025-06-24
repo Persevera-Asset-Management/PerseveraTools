@@ -8,10 +8,11 @@ from .providers.sgs import SGSProvider
 from .providers.fred import FredProvider
 from .providers.sidra import SidraProvider
 from .providers.anbima import AnbimaProvider
-from .providers.simplify import SimplifyProvider
-from .providers.invesco import InvescoProvider
 from .providers.cvm import CVMProvider
 from .providers.bcb_focus import BcbFocusProvider
+from .providers.simplify import SimplifyProvider
+from .providers.invesco import InvescoProvider
+from .providers.kraneshares import KraneSharesProvider
 from ..db.operations import to_sql
 
 logger = logging.getLogger(__name__)
@@ -45,10 +46,11 @@ class FinancialDataService:
         self.fred = FredProvider(start_date=start_date, api_key=fred_api_key)
         self.sidra = SidraProvider(start_date=start_date)
         self.anbima = AnbimaProvider(start_date=start_date)
-        self.simplify = SimplifyProvider(start_date=start_date)
-        self.invesco = InvescoProvider(start_date=start_date)
         self.cvm = CVMProvider(start_date=start_date)
         self.bcb_focus = BcbFocusProvider(start_date=start_date)
+        self.simplify = SimplifyProvider(start_date=start_date)
+        self.invesco = InvescoProvider(start_date=start_date)
+        self.kraneshares = KraneSharesProvider(start_date=start_date)
         self.logger = logging.getLogger(self.__class__.__name__)
         
     def get_bloomberg_data(
@@ -205,7 +207,7 @@ class FinancialDataService:
 
     def get_data(
         self,
-        source: Literal['sgs', 'fred', 'sidra', 'anbima', 'simplify', 'invesco', 'bcb_focus'],
+        source: Literal['sgs', 'fred', 'sidra', 'anbima', 'simplify', 'invesco', 'bcb_focus', 'kraneshares'],
         save_to_db: bool = True,
         retry_attempts: int = 3,
         table_name: Optional[str] = None,
@@ -232,9 +234,10 @@ class FinancialDataService:
             'fred': (self.fred, 'indicadores'),
             'sidra': (self.sidra, 'indicadores'),
             'anbima': (self.anbima, 'indicadores'),
+            'bcb_focus': (self.bcb_focus, 'indicadores'),
             'simplify': (self.simplify, 'indicadores'),
             'invesco': (self.invesco, 'indicadores'),
-            'bcb_focus': (self.bcb_focus, 'indicadores'),
+            'kraneshares': (self.kraneshares, 'indicadores'),
         }
         
         if source not in providers:
