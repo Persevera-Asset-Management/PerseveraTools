@@ -48,6 +48,7 @@ class InvescoProvider(DataProvider):
             # Remove any rows where the weight is not a number
             df['weight_cta_invesco'] = pd.to_numeric(df['weight_cta_invesco'], errors='coerce')
             df.dropna(subset=['weight_cta_invesco'], inplace=True)
+            df['weight_cta_invesco'] = df['weight_cta_invesco'] / 100
             
             df = df.melt(id_vars=['name', 'date'], var_name='field', value_name='value')
             
