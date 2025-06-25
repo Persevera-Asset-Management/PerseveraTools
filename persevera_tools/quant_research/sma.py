@@ -75,6 +75,8 @@ def simular_patrimonio(
     for mes in range(1, meses_totais_simulacao + 1):
         patrimonio_inicial_mes_corrente = patrimonio_atual_para_prox_mes
 
+        fator_inflacao = (1 + inflacao_mensal_calc) ** (mes - 1)
+
         # Se o patrimônio zerou, não há mais o que simular
         if patrimonio_inicial_mes_corrente <= 0:
             patrimonio_atual_para_prox_mes = 0
@@ -86,8 +88,6 @@ def simular_patrimonio(
             # Aplicar rendimento
             rendimento_bruto_mes = patrimonio_inicial_mes_corrente * rentabilidade_mensal_bruta_taxa
             rendimento_total += rendimento_bruto_mes
-            
-            fator_inflacao = (1 + inflacao_mensal_calc) ** (mes - 1)
             
             aporte_do_mes_base = 0.0
             resgate_do_mes_base = 0.0
