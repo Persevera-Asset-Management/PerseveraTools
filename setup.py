@@ -2,7 +2,7 @@ from setuptools import setup, find_packages
 
 setup(
     name="persevera_tools",
-    version="0.6.7",
+    version="0.6.8",
     packages=find_packages(),
     install_requires=[
         "pandas",
