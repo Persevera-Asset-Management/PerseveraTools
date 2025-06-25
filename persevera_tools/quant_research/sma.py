@@ -113,11 +113,10 @@ def simular_patrimonio(
 
             imposto_do_mes = 0.0
             if resgate_efetivo_mes > 0:
-                patrimonio_para_calculo_ganho = patrimonio_inicial_mes_corrente + rendimento_bruto_mes
-                ganho_de_capital_total = patrimonio_para_calculo_ganho - capital_investido
+                ganho_de_capital_total = patrimonio_antes_mov - capital_investido
                 
-                if ganho_de_capital_total > 0 and patrimonio_para_calculo_ganho > 0:
-                    proporcao_ganho = ganho_de_capital_total / patrimonio_para_calculo_ganho
+                if ganho_de_capital_total > 0 and patrimonio_antes_mov > 0:
+                    proporcao_ganho = ganho_de_capital_total / patrimonio_antes_mov
                     ganho_realizado = resgate_efetivo_mes * proporcao_ganho
                     imposto_do_mes = max(0, ganho_realizado * (aliquota_irrf / 100.0))
                     
