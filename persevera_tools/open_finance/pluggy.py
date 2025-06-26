@@ -2,12 +2,11 @@ import requests
 import json
 import pandas as pd
 from datetime import datetime
-import logging
 import os
 from typing import List, Dict, Any, Optional
+from ..utils.logging import get_logger
 
-logger = logging.getLogger(__name__)
-
+logger = get_logger(__name__)
 
 class PluggyService:
     """Service to interact with Pluggy API for financial data extraction."""
