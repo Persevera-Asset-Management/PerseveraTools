@@ -13,9 +13,12 @@ def get_bloomberg_codes(sheet_name: str, category: str) -> Dict[str, str]:
     df = df.set_index('bloomberg_code')
     return df['mnemonic'].to_dict()
 
-def get_codes(source: str, category: Optional[str] = None) -> Dict[str, str]:
+def get_codes(source: Optional[str] = None, category: Optional[str] = None) -> Dict[str, str]:
     """Get codes from indicadores_definicoes table."""
-    df = read_sql(f"SELECT * FROM indicadores_definicoes WHERE source = '{source}'")
+    query = "SELECT * FROM indicadores_definicoes"
+    if source:
+        query += f" WHERE source = '{source}'"
+    df = read_sql(query)
     df = df[df['category'] == category] if category else df
     df = df.set_index('raw_code')
     return df['code'].to_dict()
