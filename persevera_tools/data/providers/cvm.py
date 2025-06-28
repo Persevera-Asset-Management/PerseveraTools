@@ -106,16 +106,15 @@ class CVMProvider(DataProvider):
         for date in date_range:
             monthly_df = self._download_and_process_month(date)
             if monthly_df is not None and not monthly_df.empty:
+                if cnpjs:
+                    self.logger.info(f"Filtering for {len(cnpjs)} CNPJs.")
+                    monthly_df = monthly_df[monthly_df['fund_cnpj'].isin(cnpjs)].copy()
                 all_data.append(monthly_df)
         
         if not all_data:
             raise DataRetrievalError(f"No data retrieved from CVM for the period {self.start_date} to {end_date_dt.strftime('%Y-%m-%d')}.")
         
         final_df = pd.concat(all_data, ignore_index=True)
-
-        if cnpjs:
-            self.logger.info(f"Filtering for {len(cnpjs)} CNPJs.")
-            final_df = final_df[final_df['fund_cnpj'].isin(cnpjs)].copy()
 
         if final_df.empty:
             self.logger.warning("Dataframe is empty after filtering by CNPJs or for the period.")
