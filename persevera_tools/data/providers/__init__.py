@@ -10,6 +10,7 @@ from .bcb_focus import BcbFocusProvider
 from .simplify import SimplifyProvider
 from .invesco import InvescoProvider
 from .kraneshares import KraneSharesProvider
+from .investing_com import InvestingComProvider
 
 __all__ = [
     # Base classes
@@ -18,5 +19,5 @@ __all__ = [
     # Provider implementations
     'BloombergProvider', 'SGSProvider', 'FredProvider', 'SidraProvider', 
     'AnbimaProvider', 'SimplifyProvider', 'CVMProvider', 'InvescoProvider',
-    'ComdinheiroProvider', 'BcbFocusProvider', 'KraneSharesProvider'
+    'ComdinheiroProvider', 'BcbFocusProvider', 'KraneSharesProvider', 'InvestingComProvider'
 ]
