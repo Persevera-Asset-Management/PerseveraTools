@@ -1,11 +1,22 @@
 from bcb import Expectativas
 import pandas as pd
+import unicodedata
 
 from .base import DataProvider, DataRetrievalError, ValidationError
 
 
 class BcbFocusProvider(DataProvider):
     """Provider for BCB Focus Expectations data."""
+
+    @staticmethod
+    def _slugify(text: str) -> str:
+        """
+        Normalize string by removing accents, converting to lowercase,
+        replacing spaces with underscores and removing hyphens.
+        """
+        text = unicodedata.normalize("NFD", text)
+        text = "".join(c for c in text if unicodedata.category(c) != "Mn")
+        return text.lower().replace(" ", "_").replace("-", "")
 
     def __init__(self, start_date: str = "2015-01-01"):
         """
@@ -63,25 +74,25 @@ class BcbFocusProvider(DataProvider):
 
         return long_df
 
-    def _get_ipca_expectations(self) -> pd.DataFrame:
+    def _get_annual_expectations(self, indicator: str) -> pd.DataFrame:
         """Retrieve annual IPCA market expectations."""
-        self.logger.info("Retrieving annual IPCA expectations from BCB Focus...")
+        self.logger.info(f"Retrieving annual {indicator} expectations from BCB Focus...")
         try:
             ep = self.em.get_endpoint("ExpectativasMercadoAnuais")
             df = (
                 ep.query()
-                .filter(ep.Indicador == "IPCA")
+                .filter(ep.Indicador == indicator)
                 .filter(ep.baseCalculo == 0)
                 .filter(ep.Data >= self.start_date.strftime("%Y-%m-%d"))
                 .collect()
             )
         except Exception as e:
             raise DataRetrievalError(
-                f"Failed to retrieve IPCA expectations from BCB Focus: {e}"
+                f"Failed to retrieve {indicator} expectations from BCB Focus: {e}"
             )
 
         if df.empty:
-            self.logger.warning("No IPCA expectations data retrieved.")
+            self.logger.warning(f"No {indicator} expectations data retrieved.")
             return pd.DataFrame()
 
         df = df.drop(columns=["baseCalculo", "IndicadorDetalhe"])
@@ -97,7 +108,7 @@ class BcbFocusProvider(DataProvider):
             "total_responses",
         ]
 
-        df["code"] = "br_focus_ipca_median_" + df["reference"]
+        df["code"] = f"br_focus_{self._slugify(indicator)}_median_" + df["reference"]
 
         df = df[["code", "date", "median"]]
 
@@ -108,7 +119,7 @@ class BcbFocusProvider(DataProvider):
 
     def get_data(self, **kwargs) -> pd.DataFrame:
         """
-        Retrieve data from BCB Focus for Selic and IPCA.
+        Retrieve data from BCB Focus.
 
         Returns:
             DataFrame with columns: ['date', 'code', 'field', 'value']
@@ -116,11 +127,13 @@ class BcbFocusProvider(DataProvider):
         self._log_processing("bcb_focus")
 
         selic_df = self._get_selic_expectations()
-        ipca_df = self._get_ipca_expectations()
+        ipca_df = self._get_annual_expectations("IPCA")
+        us_dollar_df = self._get_annual_expectations("Câmbio")
+        pib_df = self._get_annual_expectations("PIB Total")
 
-        if selic_df.empty and ipca_df.empty:
+        if selic_df.empty and ipca_df.empty and us_dollar_df.empty and pib_df.empty:
             raise DataRetrievalError("No data retrieved from BCB Focus")
 
-        df = pd.concat([selic_df, ipca_df], ignore_index=True)
+        df = pd.concat([selic_df, ipca_df, us_dollar_df, pib_df], ignore_index=True)
 
         return self._validate_output(df)
