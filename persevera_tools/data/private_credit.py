@@ -78,10 +78,7 @@ def get_emissions(index_code: Optional[Union[str, List[str]]] = None,
     df = read_sql(query, date_columns=date_fields)
     
     if df.empty:
-        if index_codes:
-            raise ValueError(f"No data found for index code(s) {index_codes}")
-        else:
-            raise ValueError("No data found for any index codes")
+        raise ValueError("No data found")
     
     if 'quantidade_emitida' in df.columns and 'valor_nominal_na_emissao' in df.columns:
         df['volume_emissao'] = df['valor_nominal_na_emissao'] * df['quantidade_emitida']
