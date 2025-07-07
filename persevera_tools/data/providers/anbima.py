@@ -69,7 +69,7 @@ class AnbimaProvider(DataProvider):
             id_vars=['code', 'date', 'reference'], 
             var_name='field'
         )
-
+        df = df.replace({np.nan: None})
         return df
 
     def _parse_debentures_file(self, content: str, date: datetime) -> pd.DataFrame:
@@ -102,5 +102,4 @@ class AnbimaProvider(DataProvider):
         df['Referência NTN-B'] = pd.to_datetime(df['Referência NTN-B'], format='%d/%m/%Y', errors='coerce')
         df.columns = ['code', 'yield_to_maturity', 'price_close', 'duration', 'reference']
         df['date'] = date
-        df.replace({np.nan: None, pd.NaT: None}, inplace=True)
         return df
