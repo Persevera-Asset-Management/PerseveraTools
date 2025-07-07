@@ -84,9 +84,8 @@ class DebenturesComProvider(DataProvider):
             '-': None, '': None, np.nan: None,
         })
         
-        df = df.drop_duplicates()
         df = df.dropna(subset=['code', 'data_emissao'])
-        
+        df = df.drop_duplicates(subset=['code', 'data_emissao'], keep='last')
         return df
 
     def _transform_to_long_format(self, df: pd.DataFrame) -> pd.DataFrame:
