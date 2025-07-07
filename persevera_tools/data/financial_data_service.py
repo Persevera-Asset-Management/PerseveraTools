@@ -14,6 +14,7 @@ from .providers.simplify import SimplifyProvider
 from .providers.invesco import InvescoProvider
 from .providers.kraneshares import KraneSharesProvider
 from .providers.investing_com import InvestingComProvider
+from .providers.debentures_com import DebenturesComProvider
 from ..db.operations import to_sql
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,8 @@ class FinancialDataService:
         self.simplify = SimplifyProvider(start_date=start_date)
         self.invesco = InvescoProvider(start_date=start_date)
         self.kraneshares = KraneSharesProvider(start_date=start_date)
-        self.investing_com = InvestingComProvider(start_date=start_date)
+        self.investing_com = InvestingComProvider()
+        self.debentures_com = DebenturesComProvider()
         self.logger = logging.getLogger(self.__class__.__name__)
         
     def get_bloomberg_data(
@@ -261,6 +263,63 @@ class FinancialDataService:
                     self.logger.info(f"Retrying... ({attempt}/{retry_attempts})")
         
         error_msg = f"Failed to retrieve data from Investing.com after {retry_attempts} attempts. Last error: {str(last_error)}"
+        self.logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+    def get_debentures_com_data(
+        self,
+        save_to_db: bool = False,
+        retry_attempts: int = 3,
+        table_name: str = 'credito_privado_emissoes'
+    ) -> pd.DataFrame:
+        """
+        Retrieve economic calendar data from Debentures.com.
+        
+        Args:
+            save_to_db: Whether to save the data to the database.
+            retry_attempts: Number of retry attempts.
+            table_name: The database table name to store economic calendar data.
+            
+        Returns:
+            DataFrame with economic calendar data.
+        """
+        self.logger.info(f"Retrieving emissions data from Debentures.com")
+        
+        attempt = 0
+        last_error = None
+        
+        while attempt < retry_attempts:
+            try:
+                df = self.debentures_com.get_data(category='emissions')
+                
+                if df.empty:
+                    self.logger.warning(f"No data retrieved from Debentures.com")
+                    return df
+                
+                if save_to_db:
+                    self.logger.info(f"Saving {len(df)} rows to table '{table_name}'")
+                    try:
+                        to_sql(
+                            data=df,
+                            table_name=table_name,
+                            primary_keys=['code'],
+                            update=True,
+                            batch_size=5000
+                        )
+                    except Exception as e:
+                        self.logger.error(f"Failed to save data to database: {str(e)}")
+                        raise
+                
+                return df
+                
+            except Exception as e:
+                attempt += 1
+                last_error = e
+                self.logger.warning(f"Attempt {attempt} failed: {str(e)}")
+                if attempt < retry_attempts:
+                    self.logger.info(f"Retrying... ({attempt}/{retry_attempts})")
+        
+        error_msg = f"Failed to retrieve data from Debentures.com after {retry_attempts} attempts. Last error: {str(last_error)}"
         self.logger.error(error_msg)
         raise RuntimeError(error_msg)
 

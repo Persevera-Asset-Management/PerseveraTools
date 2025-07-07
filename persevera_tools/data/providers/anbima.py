@@ -21,12 +21,12 @@ class AnbimaProvider(DataProvider):
     def __init__(self, start_date: str = '1980-01-01'):
         super().__init__(start_date)
     
-    def get_data(self, download_new: bool = True, **kwargs) -> pd.DataFrame:
+    def get_data(self, **kwargs) -> pd.DataFrame:
         """
         Retrieve data from ANBIMA.
         
         Args:
-            download_new: Whether to download new data files or use existing ones
+            **kwargs: Additional keyword arguments
             
         Returns:
             DataFrame with columns: ['date', 'code', 'field', 'value']

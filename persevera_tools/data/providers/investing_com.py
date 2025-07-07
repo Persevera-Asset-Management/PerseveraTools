@@ -10,8 +10,8 @@ from .base import DataProvider, DataRetrievalError
 class InvestingComProvider(DataProvider):
     """Provider for Investing.com data, such as the economic calendar."""
 
-    def __init__(self, start_date: str = '1980-01-01'):
-        super().__init__(start_date)
+    def __init__(self):
+        super().__init__()
         self.headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36 Edg/136.0.0.0",
             "Content-Type": "application/x-www-form-urlencoded",
