@@ -252,9 +252,8 @@ def calculate_spread(index_code: str,
 
     emissions = emissions[emissions['code'].isin(series.columns)]
 
-    weight_df = pd.DataFrame(index=series.index)
-    for code in series.columns:
-        weight_df[code] = emissions[emissions['code'] == code]['volume_emissao'].iloc[0]
+    weights_map = emissions.set_index('code')['volume_emissao']
+    weight_df = pd.DataFrame({col: weights_map[col] for col in series.columns}, index=series.index)
     
     weight_df = (weight_df * (series > 0)).replace(0., np.nan)
     weight_df = weight_df.div(weight_df.sum(axis=1), axis=0)
