@@ -25,6 +25,7 @@ def get_equities_portfolio(date: Optional[Union[str, datetime, pd.Timestamp]] = 
     Raises:
         ValueError: If dates are in invalid format or if end_date is before start_date.
     """
+    date_str = None
     if date is not None:
         if isinstance(date, str):
             try:
