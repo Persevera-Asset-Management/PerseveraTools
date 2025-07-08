@@ -231,4 +231,4 @@ def goal_seek(
             inferior = meio
             valor_inferior = valor_meio
     
-    return (inferior + superior) / 2 
+    return (inferior + superior) / 2
