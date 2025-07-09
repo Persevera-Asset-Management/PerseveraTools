@@ -181,6 +181,8 @@ class ComdinheiroProvider(DataProvider):
                 for table_code, table_name in table_codes.items():
                     if table_code in data['tables']:
                         df = pd.DataFrame(data['tables'][table_code]).set_index('lin0').T.reset_index(drop=True)
+                        if '' in df.columns:
+                            df.drop(columns=[''], inplace=True)
                         tables[table_name] = df
                 return tables
             else:
