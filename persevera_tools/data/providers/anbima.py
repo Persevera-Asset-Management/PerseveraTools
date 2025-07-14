@@ -6,7 +6,6 @@ from datetime import datetime, timedelta
 import numpy as np
 from ..lookups import get_codes
 from .base import DataProvider, DataRetrievalError
-from persevera_tools.data.lookups import get_url
 
 # Suppress openpyxl warning about workbooks without default styles
 warnings.filterwarnings("ignore", message="Workbook contains no default style", category=UserWarning)

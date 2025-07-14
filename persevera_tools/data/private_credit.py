@@ -228,7 +228,8 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
 def calculate_spread(index_code: str,
                      start_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
                      end_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
-                     field: Union[str, List[str]] = 'yield_to_maturity') -> pd.DataFrame:
+                     field: Union[str, List[str]] = 'yield_to_maturity',
+                     calculate_distribution: bool = False) -> pd.DataFrame:
     """Calculate the spread for a given code.
     
     Args:
@@ -236,6 +237,7 @@ def calculate_spread(index_code: str,
         start_date: Optional start date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp.
         end_date: Optional end date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp.
         field: Field or list of fields to retrieve (default: 'yield_to_maturity')
+        calculate_distribution: Whether to calculate the distribution of the spread
     Returns:
         DataFrame with spread data, indexed by 'date'.
     """
@@ -252,17 +254,29 @@ def calculate_spread(index_code: str,
 
     emissions = emissions[emissions['code'].isin(series.columns)]
 
-    weights_map = emissions.set_index('code')['volume_emissao']
-    weight_df = pd.DataFrame({col: weights_map[col] for col in series.columns}, index=series.index)
+    volume_map = emissions.set_index('code')['volume_emissao']
+    volume_df = pd.DataFrame({col: volume_map[col] for col in series.columns}, index=series.index)
     
-    weight_df = (weight_df * (series > 0)).replace(0., np.nan)
-    weight_df = weight_df.div(weight_df.sum(axis=1), axis=0)
+    volume_df = (volume_df * (series > 0)).replace(0., np.nan)
+    weight_df = volume_df.div(volume_df.sum(axis=1), axis=0)
 
     # Calculate the spread
     spread = pd.DataFrame(index=series.index)
     spread['median'] = series.median(axis=1)
     spread['mean'] = series.mean(axis=1)
     spread['weighted_mean'] = (series * weight_df).sum(axis=1)
-    
+
+    if calculate_distribution:
+        spread['count_above_mean'] = (series.T > spread['mean'].values).T.sum(axis=1)
+        spread['count_under_mean'] = (series.T <= spread['mean'].values).T.sum(axis=1)
+        spread['volume_above_mean'] = ((series.T > spread['mean'].values).T * volume_df).sum(axis=1)
+        spread['volume_under_mean'] = ((series.T <= spread['mean'].values).T * volume_df).sum(axis=1)
+        
+        spread['count_yield_0_50bp'] = (series.T < 0.50).T.sum(axis=1)
+        spread['count_yield_50_75bp'] = ((series.T >= 0.50) & (series.T < 0.75)).T.sum(axis=1)
+        spread['count_yield_75_100bp'] = ((series.T >= 0.75) & (series.T < 1.00)).T.sum(axis=1)
+        spread['count_yield_100_150bp'] = ((series.T >= 1.00) & (series.T < 1.50)).T.sum(axis=1)
+        spread['count_yield_150_250bp'] = ((series.T >= 1.50) & (series.T < 2.50)).T.sum(axis=1)
+        spread['count_yield_above_250bp'] = (series.T >= 2.50).T.sum(axis=1)
     return spread
     

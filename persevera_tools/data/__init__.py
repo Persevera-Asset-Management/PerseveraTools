@@ -1,7 +1,6 @@
 from .lookups import (
     get_bloomberg_codes,
-    get_codes,
-    get_url
+    get_codes
 )
 from .asset_info import (
     get_securities_by_exchange,
@@ -17,7 +16,6 @@ __all__ = [
     'get_bloomberg_codes',
     'get_securities_by_exchange',
     'get_codes',
-    'get_url',
     'get_series',
     'get_descriptors',
     'get_index_composition',
