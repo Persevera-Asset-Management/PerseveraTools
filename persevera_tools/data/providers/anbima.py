@@ -4,8 +4,9 @@ import urllib.request
 import warnings
 from datetime import datetime, timedelta
 import numpy as np
-
+from ..lookups import get_codes
 from .base import DataProvider, DataRetrievalError
+from persevera_tools.data.lookups import get_url
 
 # Suppress openpyxl warning about workbooks without default styles
 warnings.filterwarnings("ignore", message="Workbook contains no default style", category=UserWarning)
@@ -35,6 +36,33 @@ class AnbimaProvider(DataProvider):
             
         return self._validate_output(df)
 
+    def _read_anbima_files(self) -> pd.DataFrame:
+        """Read ANBIMA files from URL."""
+        securities_list = get_codes(source='anbima')
+        data_frames = []
+
+        for url, index_name in securities_list.items():
+            try:
+                self.logger.info(f"Reading {index_name} from {url}")
+                try:
+                    temp = pd.read_excel(url, usecols="B:C", engine="openpyxl")
+                except:
+                    temp = pd.read_excel(url, usecols="B:C", engine="xlrd")
+                    
+                temp.columns = ['date', 'value']
+                temp['code'] = index_name
+                data_frames.append(temp)
+                
+            except Exception as e:
+                self.logger.warning(f"Failed to process {index_name}: {str(e)}")
+        
+        if not data_frames:
+            return pd.DataFrame()
+            
+        df = pd.concat(data_frames, ignore_index=True)
+        df = df.assign(field='close')
+        return df
+
     def get_debentures_data(self) -> pd.DataFrame:
         """
         Retrieves and parses ANBIMA debentures data for a specific date.
@@ -47,23 +75,30 @@ class AnbimaProvider(DataProvider):
         """
         self._log_processing(f'anbima debentures')
         
-        df = pd.DataFrame()
+        data_frames = []
         for date in pd.bdate_range(start=self.start_date, end=datetime.today(), freq='B'):
             url = f"https://www.anbima.com.br/informacoes/merc-sec-debentures/arqs/db{date.strftime('%y%m%d')}.txt"
             
+            content = None
             try:
                 with urllib.request.urlopen(url) as response:
                     content = response.read().decode('latin-1')
             except Exception as e:
                 self.logger.error(f"Failed to download debentures file from {url}: {e}")
+                continue
                 
-            try:
-                df = pd.concat([df, self._parse_debentures_file(content, date)])
-            except Exception as e:
-                self.logger.error(f"Failed to parse debentures file: {e}")
+            if content:
+                try:
+                    parsed_df = self._parse_debentures_file(content, date)
+                    if not parsed_df.empty:
+                        data_frames.append(parsed_df)
+                except Exception as e:
+                    self.logger.error(f"Failed to parse debentures file: {e}")
 
-        if df.empty:
+        if not data_frames:
             raise DataRetrievalError("No data retrieved from ANBIMA debentures")
+        
+        df = pd.concat(data_frames, ignore_index=True)
         
         df = df.melt(
             id_vars=['code', 'date', 'reference'], 
@@ -83,12 +118,13 @@ class AnbimaProvider(DataProvider):
             A DataFrame with the parsed data.
         """
         lines = content.splitlines()
+        if len(lines) < 4:
+            return pd.DataFrame()
+            
         header = lines[2].split('@')
-        lines = lines[3:]
+        data = [line.split('@') for line in lines[3:]]
 
-        df = pd.DataFrame(columns=header)
-        for line in lines:
-            df = pd.concat([df, pd.DataFrame([line.split('@')], columns=header)], ignore_index=True)
+        df = pd.DataFrame(data, columns=header)
 
         df = df[['Código', 'Taxa Indicativa', 'PU', 'Duration', 'Referência NTN-B']]
 
