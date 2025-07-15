@@ -51,3 +51,27 @@ def get_equities_portfolio(date: Optional[Union[str, datetime, pd.Timestamp]] = 
         raise ValueError(f"No data found for date {date_str}")
     
     return df
+
+def get_building_blocks(reference: Optional[str] = None) -> pd.DataFrame:
+    """Get building blocks data from the database.
+    
+    Args:
+        reference: Optional reference filter. If None, returns all data.
+        
+    Returns:
+        pd.DataFrame: A DataFrame with the building blocks data.
+        
+    Raises:
+        ValueError: If no data is found for the given reference.
+    """
+    query = "SELECT * FROM cadm_building_blocks"
+    
+    if reference:
+        query += f" WHERE reference = '{reference}'"
+        
+    df = read_sql(query)
+    
+    if df.empty and reference:
+        raise ValueError(f"No data found for reference {reference}")
+    
+    return df
