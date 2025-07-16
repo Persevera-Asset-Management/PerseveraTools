@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "persevera_tools"
-version = "0.8.13"
+version = "0.8.14"
 description = "Internal tools for Persevera Asset Management"
 authors = [{ name = "Persevera Asset Management" }]
 dependencies = [

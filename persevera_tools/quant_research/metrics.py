@@ -27,7 +27,6 @@ def calculate_sqn(close_prices: pd.Series, period: int = 100) -> pd.Series:
 
     return sqn
 
-
 def get_sqn_categories(sqn: pd.Series) -> pd.Series:
     """
     Categorizes SQN values based on the TradingView script's color logic.
@@ -59,4 +58,28 @@ def get_sqn_categories(sqn: pd.Series) -> pd.Series:
         "Bullish",
         "Strong Bullish"
     ]
-    return pd.Series(np.select(conditions, categories, default=np.nan), index=sqn.index) 
+    return pd.Series(np.select(conditions, categories, default=np.nan), index=sqn.index)
+
+def calculate_tracking_error(series_a: pd.Series, series_b: pd.Series, window: int = 252) -> float:
+    """
+    Calculates the tracking error between two series.
+
+    Args:
+        series_a (pd.Series): The first series.
+        series_b (pd.Series): The second series.
+        window (int): The window to calculate the tracking error over. Defaults to 252.
+
+    Returns:
+        float: The tracking error.
+    """
+    # Align the series by index and remove any rows with missing values
+    aligned_data = pd.concat([series_a, series_b], axis=1, join='inner')
+    
+    # Calculate returns on the aligned data after removing missing values
+    returns = aligned_data.dropna().pct_change().dropna()
+    
+    # Calculate the difference in returns
+    difference = returns.iloc[:, 0] - returns.iloc[:, 1]
+    
+    # Calculate the annualized standard deviation of the difference (Tracking Error)
+    return np.sqrt(window) * difference.std()

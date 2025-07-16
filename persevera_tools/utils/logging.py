@@ -1,7 +1,3 @@
-"""
-Simple logging utilities for PerseveraTools.
-"""
-
 import logging
 import logging.handlers
 import os
