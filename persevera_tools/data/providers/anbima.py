@@ -16,7 +16,7 @@ class AnbimaProvider(DataProvider):
     def __init__(self, start_date: str = '1980-01-01'):
         super().__init__(start_date)
     
-    def get_data(self, **kwargs) -> pd.DataFrame:
+    def get_data(self, category: str, **kwargs) -> pd.DataFrame:
         """
         Retrieve data from ANBIMA.
         
@@ -26,7 +26,7 @@ class AnbimaProvider(DataProvider):
         Returns:
             DataFrame with columns: ['date', 'code', 'field', 'value']
         """
-        self._log_processing('anbima')
+        self._log_processing(category)
         
         df = self._read_anbima_files()
         
@@ -62,7 +62,7 @@ class AnbimaProvider(DataProvider):
         df = df.assign(field='close')
         return df
 
-    def get_debentures_data(self) -> pd.DataFrame:
+    def get_debentures_data(self, category: str, **kwargs) -> pd.DataFrame:
         """
         Retrieves and parses ANBIMA debentures data for a specific date.
 
@@ -72,7 +72,7 @@ class AnbimaProvider(DataProvider):
         Returns:
             A DataFrame with the parsed debentures data.
         """
-        self._log_processing(f'anbima debentures')
+        self._log_processing(category)
         
         data_frames = []
         for date in pd.bdate_range(start=self.start_date, end=datetime.today(), freq='B'):

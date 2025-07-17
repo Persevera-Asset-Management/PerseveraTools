@@ -106,10 +106,10 @@ class DebenturesComProvider(DataProvider):
         long_df = long_df.dropna(subset=['value'])
         return long_df
 
-    def get_data(self, category: str, **kwargs) -> pd.DataFrame:
+    def get_data(self, category: str, data_type: str = 'emissions', **kwargs) -> pd.DataFrame:
         self._log_processing(category)
-        if category != 'emissions':
-            raise NotImplementedError(f"Category '{category}' not supported by DebenturesComProvider.")
+        if data_type != 'emissions':
+            raise NotImplementedError(f"Data type '{data_type}' not supported by DebenturesComProvider.")
 
         content = self._fetch_data()
         df = self._parse_data(content)

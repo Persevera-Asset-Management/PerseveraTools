@@ -349,7 +349,7 @@ class FinancialDataService:
         
         while attempt < retry_attempts:
             try:
-                df = self.anbima.get_debentures_data()
+                df = self.anbima.get_debentures_data(category='anbima_debentures')
                 
                 if df.empty:
                     self.logger.warning(f"No data retrieved from ANBIMA")
@@ -428,7 +428,7 @@ class FinancialDataService:
         
         while attempt < retry_attempts:
             try:
-                df = provider.get_data(**kwargs)
+                df = provider.get_data(category=source, **kwargs)
                 
                 if df.empty:
                     self.logger.warning(f"No data retrieved from {source}")

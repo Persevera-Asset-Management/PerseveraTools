@@ -117,14 +117,14 @@ class BcbFocusProvider(DataProvider):
 
         return long_df
 
-    def get_data(self, **kwargs) -> pd.DataFrame:
+    def get_data(self, category: str, **kwargs) -> pd.DataFrame:
         """
         Retrieve data from BCB Focus.
 
         Returns:
             DataFrame with columns: ['date', 'code', 'field', 'value']
         """
-        self._log_processing("bcb_focus")
+        self._log_processing(category)
 
         selic_df = self._get_selic_expectations()
         ipca_df = self._get_annual_expectations("IPCA")

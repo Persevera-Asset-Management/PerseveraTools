@@ -121,7 +121,7 @@ class InvestingComProvider(DataProvider):
         
         return df
 
-    def get_data(self, category: str, **kwargs) -> pd.DataFrame:
+    def get_data(self, category: str, data_type: str = 'economic_calendar', **kwargs) -> pd.DataFrame:
         """
         Retrieve economic calendar data from Investing.com.
         
@@ -135,8 +135,8 @@ class InvestingComProvider(DataProvider):
             pd.DataFrame: DataFrame with columns: ['date', 'event_id', 'country', 'currency', 'event_name', 'importance', 'event_url'].
         """
         self._log_processing(category)
-        if category != 'economic_calendar':
-            raise NotImplementedError(f"Category '{category}' not supported by InvestingComProvider.")
+        if data_type != 'economic_calendar':
+            raise NotImplementedError(f"Data type '{data_type}' not supported by InvestingComProvider.")
 
         countries = kwargs.get('countries', ['5', '32'])
         time_filter = kwargs.get('time_filter', 'timeRemain')

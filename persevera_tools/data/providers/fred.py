@@ -22,16 +22,16 @@ class FredProvider(DataProvider):
         super().__init__(start_date)
         self.fred = Fred(api_key=api_key or FRED_API_KEY)
     
-    def get_data(self, **kwargs) -> pd.DataFrame:
+    def get_data(self, category: str, **kwargs) -> pd.DataFrame:
         """
         Retrieve data from FRED.
         
         Returns:
             DataFrame with columns: ['date', 'code', 'field', 'value']
         """
-        self._log_processing('fred')
+        self._log_processing(category)
         
-        securities_list = get_codes(source='fred')
+        securities_list = get_codes(source=category)
         
         try:
             df = pd.DataFrame({

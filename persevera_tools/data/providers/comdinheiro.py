@@ -184,8 +184,7 @@ class ComdinheiroProvider(DataProvider):
         except ValueError:
             raise DataRetrievalError("Failed to decode JSON from response.")
 
-
-    def get_data(self, category: str = 'portfolio_positions', **kwargs) -> pd.DataFrame | dict[str, pd.DataFrame]:
+    def get_data(self, category: str, data_type: str = 'portfolio_positions', **kwargs) -> pd.DataFrame | dict[str, pd.DataFrame]:
         """
         Retrieve data from Comdinheiro.
 
@@ -208,7 +207,7 @@ class ComdinheiroProvider(DataProvider):
         """
         self._log_processing(category)
 
-        if category == 'portfolio_positions':
+        if data_type == 'portfolio_positions':
             portfolios = kwargs.get('portfolios')
             date_report = kwargs.get('date_report')
 
@@ -238,7 +237,7 @@ class ComdinheiroProvider(DataProvider):
             
             return df
         
-        elif category == 'portfolio_statement':
+        elif data_type == 'portfolio_statement':
             portfolio = kwargs.get('portfolio')
             date_inception = kwargs.get('date_inception')
             date_report = kwargs.get('date_report')
@@ -255,4 +254,4 @@ class ComdinheiroProvider(DataProvider):
             return dfs
 
         else:
-            raise NotImplementedError(f"Category '{category}' not supported for Comdinheiro provider.")
+            raise NotImplementedError(f"Data type '{data_type}' not supported for Comdinheiro provider.")

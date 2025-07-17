@@ -62,22 +62,23 @@ class InvescoProvider(DataProvider):
             self.logger.error(f"An unexpected error occurred for ticker {ticker} from {url}: {e}")
             return None
 
-    def get_data(self, ticker: str = 'IMF', category: str = 'holdings', **kwargs) -> pd.DataFrame:
+    def get_data(self, category: str, ticker: str = 'IMF', data_type: str = 'holdings', **kwargs) -> pd.DataFrame:
         """
         Retrieve holdings data from Invesco.
         
         Args:
-            ticker (str): The ticker of the fund (e.g., 'IMF').
             category (str): The category of data to retrieve. Defaults to 'holdings'.
+            ticker (str): The ticker of the fund (e.g., 'IMF').
+            data_type (str): The type of data to retrieve. Defaults to 'holdings'.
             end_date (str, optional): The date for the data in 'YYYY-MM-DD' format. Defaults to today.
             
         Returns:
             pd.DataFrame: DataFrame with columns: ['date', 'code', 'field', 'value']
         """
-        self._log_processing('invesco')
+        self._log_processing(category)
 
-        if category != 'holdings':
-            raise ValueError(f"Category '{category}' is not supported for InvescoProvider.")
+        if data_type != 'holdings':
+            raise ValueError(f"Data type '{data_type}' is not supported for InvescoProvider.")
         
         df = self._download_and_process_holdings(ticker)
 

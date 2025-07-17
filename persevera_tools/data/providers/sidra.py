@@ -20,7 +20,7 @@ class SidraProvider(DataProvider):
     def __init__(self, start_date: str = '1980-01-01'):
         super().__init__(start_date)
     
-    def get_data(self, tables: Optional[Dict[str, str]] = None, **kwargs) -> pd.DataFrame:
+    def get_data(self, category: str, tables: Optional[Dict[str, str]] = None, **kwargs) -> pd.DataFrame:
         """
         Retrieve data from SIDRA.
         
@@ -31,10 +31,10 @@ class SidraProvider(DataProvider):
         Returns:
             DataFrame with columns: ['date', 'code', 'field', 'value']
         """
-        self._log_processing('sidra')
+        self._log_processing(category)
         
         tables = tables or self.DEFAULT_TABLES
-        securities_list = get_codes(source='sidra')
+        securities_list = get_codes(source=category)
         df = pd.DataFrame()
         
         for code in tables.keys():

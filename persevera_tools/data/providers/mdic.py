@@ -16,7 +16,7 @@ class MDICProvider(DataProvider):
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
         }
 
-    def get_data(self, category: str = 'trade_balance', **kwargs) -> pd.DataFrame:
+    def get_data(self, category: str, data_type: str = 'trade_balance', **kwargs) -> pd.DataFrame:
         """
         Retrieve Brazilian trade balance data from MDIC.
         """
@@ -33,7 +33,6 @@ class MDICProvider(DataProvider):
 
         try:
             excel_file = BytesIO(response.content)
-            # Read without header to allow dynamic header detection
             df = pd.read_excel(excel_file, sheet_name='DADOS_SH', header=0)
 
             self.logger.info("Successfully parsed excel file and set header.")

@@ -103,12 +103,12 @@ class KraneSharesProvider(DataProvider):
             self.logger.error(f"An unexpected error occurred for date {date.strftime('%Y-%m-%d')} from {url}: {e}")
             return None
 
-    def get_data(self, category: str = 'kmlm_holdings', end_date: Optional[str] = None, **kwargs) -> pd.DataFrame:
+    def get_data(self, category: str, data_type: str = 'kmlm_holdings', end_date: Optional[str] = None, **kwargs) -> pd.DataFrame:
         """
         Retrieve KMLM Holdings data from KraneShares.
         
         Args:
-            category (str): The category of data to retrieve. Defaults to 'kmlm_holdings'.
+            data_type (str): The type of data to retrieve. Defaults to 'kmlm_holdings'.
             end_date (str, optional): The end date for data retrieval in 'YYYY-MM-DD' format. Defaults to today.
             **kwargs: Can contain 'custom_url' to specify a direct file URL. If provided, date range is ignored.
             

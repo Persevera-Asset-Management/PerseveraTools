@@ -86,7 +86,7 @@ class CVMProvider(DataProvider):
             self.logger.error(f"An unexpected error occurred for date {date.strftime('%Y-%m')} from {url}: {e}", exc_info=True)
             return None
 
-    def get_data(self, end_date: Optional[str] = None, cnpjs: Optional[list] = None, **kwargs) -> pd.DataFrame:
+    def get_data(self, category: str, end_date: Optional[str] = None, cnpjs: Optional[list] = None, **kwargs) -> pd.DataFrame:
         """
         Retrieve daily fund data from CVM.
         
@@ -97,7 +97,7 @@ class CVMProvider(DataProvider):
         Returns:
             pd.DataFrame: DataFrame with columns: ['fund_cnpj', 'date', 'fund_total_value', 'fund_nav', 'fund_total_equity', 'fund_inflows', 'fund_outflows', 'fund_holders'].
         """
-        self._log_processing('cvm')
+        self._log_processing(category)
 
         end_date_dt = pd.to_datetime(end_date) if end_date else datetime.now()
         
