@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "persevera_tools"
-version = "0.8.16"
+dynamic = ["version"]
 description = "Internal tools for Persevera Asset Management"
 authors = [{ name = "Persevera Asset Management" }]
 dependencies = [
@@ -13,4 +13,15 @@ dependencies = [
     "psycopg2-binary",
     "sqlalchemy",
     "python-dotenv",
+    "xbbg",
+    "sidrapy",
+    "fredapi",
+    "python-bcb",
+    "requests"
 ]
+
+[tool.setuptools.dynamic]
+version = {attr = "persevera_tools.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["persevera_tools*"]
