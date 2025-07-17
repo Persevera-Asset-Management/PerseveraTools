@@ -154,6 +154,7 @@ class FinancialDataService:
     
     def get_cvm_data(
         self,
+        source: str = 'cvm',
         cnpjs: Optional[List[str]] = None,
         save_to_db: bool = True,
         retry_attempts: int = 3,
@@ -178,7 +179,7 @@ class FinancialDataService:
         
         while attempt < retry_attempts:
             try:
-                df = self.cvm.get_data(cnpjs=cnpjs)
+                df = self.cvm.get_data(category=source, cnpjs=cnpjs)
                 
                 if df.empty:
                     self.logger.warning(f"No data retrieved from CVM")

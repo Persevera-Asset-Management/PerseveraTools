@@ -24,6 +24,22 @@ class PluggyService:
             raise ValueError("Failed to authenticate with Pluggy API. Check credentials.")
         logger.info("Successfully authenticated with Pluggy API.")
 
+    def _convert_dates(self, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Converts date strings in a list of items to timezone-aware datetimes."""
+        date_columns = ["date", "dueDate", "issueDate", "createdAt", "updatedAt"]
+        for item in items:
+            for col in date_columns:
+                if col in item and item[col]:
+                    try:
+                        item[col] = pd.to_datetime(item[col]).tz_convert(
+                            "America/Sao_Paulo"
+                        )
+                    except (ValueError, TypeError):
+                        logger.warning(
+                            f"Could not convert value '{item[col]}' in column '{col}' to datetime."
+                        )
+        return items
+
     def _get_api_key(self, client_id: str, client_secret: str) -> Optional[str]:
         """
         Authenticates with Pluggy API and returns an API key.
@@ -66,7 +82,8 @@ class PluggyService:
         try:
             response = requests.get(url, headers=headers, params=params)
             response.raise_for_status()
-            return response.json().get("results", [])
+            accounts = response.json().get("results", [])
+            return self._convert_dates(accounts)
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching accounts for item_id {item_id}: {e}")
             return []
@@ -85,11 +102,12 @@ class PluggyService:
         url = "https://api.pluggy.ai/investments"
         headers = {"X-API-KEY": self.api_key, "Content-Type": "application/json"}
         params = {"itemId": item_id}
-        
+
         try:
             response = requests.get(url, headers=headers, params=params)
             response.raise_for_status()
-            return response.json().get("results", [])
+            investments = response.json().get("results", [])
+            return self._convert_dates(investments)
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching investments for item_id {item_id}: {e}")
             return []
@@ -112,7 +130,8 @@ class PluggyService:
         try:
             response = requests.get(url, headers=headers, params=params)
             response.raise_for_status()
-            return response.json().get("results", [])
+            transactions = response.json().get("results", [])
+            return self._convert_dates(transactions)
         except requests.exceptions.RequestException as e:
             logger.error(f"Error fetching transactions for account_id {account_id}: {e}")
             return []
