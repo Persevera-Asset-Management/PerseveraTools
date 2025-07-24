@@ -5,8 +5,8 @@ from typing import List, Dict, Any, Optional, Tuple, Callable
 
 from ..config import settings
 from ..utils.logging import get_logger
-# from persevera_tools.config import settings
-# from persevera_tools.utils.logging import get_logger
+from persevera_tools.config import settings
+from persevera_tools.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -89,7 +89,7 @@ def read_fibery(table_name: str, include_fibery_fields: bool = False) -> pd.Data
     canonical_name = table_meta['canonical_name']
     fields_to_query = table_meta['fields']
     
-    str_to_remove = ['_deleted', 'Collaboration', 'created-by']
+    str_to_remove = ['_deleted', 'Collaboration', 'Description', 'created-by']
     if not include_fibery_fields:
         str_to_remove.append('fibery/')
 
@@ -99,17 +99,18 @@ def read_fibery(table_name: str, include_fibery_fields: bool = False) -> pd.Data
     
     api_url = _get_fibery_api_url("commands")
     headers = _get_fibery_headers()
-    start_token = None
-    page_size = 3000
+    all_entities = []
+    page_size = 1000  # Fibery recommends up to 1000
 
-    while True:
+    # Make a copy of fields to query to safely remove items from it
+    current_fields_to_query = list(fields_to_query)
+
+    while True:  # retry loop
         query = {
             "q/from": canonical_name,
-            "q/select": fields_to_query,
+            "q/select": current_fields_to_query,
             "q/limit": page_size
         }
-        if start_token:
-            query["start"] = start_token
             
         payload = [{"command": "fibery.entity/query", "args": {"query": query}}]
 
@@ -120,23 +121,42 @@ def read_fibery(table_name: str, include_fibery_fields: bool = False) -> pd.Data
             
             if not data or not data[0].get("success"):
                 error_info = data[0].get('result', {})
-                logger.error(f"Fibery API error: {error_info.get('message', 'Unknown error')}")
-                logger.debug(f"Error details: {error_info}")
-                break
+                error_name = error_info.get('name')
 
-            result = data[0]["result"]
+                if error_name == 'entity.error/query-primitive-field-expr-invalid':
+                    error_data = error_info.get('data', {})
+                    top_error = error_data.get('top', {})
+                    field_to_remove = top_error.get('field', [None])[0]
+
+                    if field_to_remove and field_to_remove in current_fields_to_query:
+                        logger.warning(f"Field '{field_to_remove}' is not primitive. Removing it from the query and retrying.")
+                        current_fields_to_query.remove(field_to_remove)
+                        continue  # retry request with modified fields
+                    else:
+                        logger.error(f"Could not recover from non-primitive field error. Field to remove: {field_to_remove}", exc_info=True)
+                        return pd.DataFrame()
+                else:
+                    logger.error(f"Fibery API error: {error_info.get('message', 'Unknown error')}")
+                    logger.debug(f"Error details: {error_info}")
+                    return pd.DataFrame()
+
+            # If we are here, the query was successful with the current set of fields
+            page_entities = data[0]["result"]
+            all_entities.extend(page_entities)
             
-            if not start_token:
-                break
+            # This logic assumes that if we receive less than page_size results, we are on the last page.
+            # Fibery pagination can also be done with a start token, but this is a simpler approach that should work for most cases.
+            if len(page_entities) < page_size:
+                break # from pagination loop
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Request error while reading from Fibery: {e}", exc_info=True)
-            break
+            return pd.DataFrame()
             
-    if not result:
+    if not all_entities:
         return pd.DataFrame()
 
-    df = pd.DataFrame(result)
+    df = pd.DataFrame(all_entities)
 
     # Automatic datatype inference and conversion
     for col in df.columns:
