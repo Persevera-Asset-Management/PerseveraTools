@@ -33,6 +33,10 @@ class Settings:
         self.COMDINHEIRO_USERNAME = os.getenv('PERSEVERA_COMDINHEIRO_USERNAME')
         self.COMDINHEIRO_PASSWORD = os.getenv('PERSEVERA_COMDINHEIRO_PASSWORD')
 
+        # Load Fibery credentials
+        self.FIBERY_API_TOKEN = os.getenv('PERSEVERA_FIBERY_API_TOKEN')
+        self.FIBERY_DOMAIN = os.getenv('PERSEVERA_FIBERY_DOMAIN')
+
         # Load logging configuration with environment variable overrides
         self.LOG_CONFIG = DEFAULT_CONFIG['LOG_CONFIG'].copy()
         

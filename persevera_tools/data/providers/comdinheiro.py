@@ -221,7 +221,8 @@ class ComdinheiroProvider(DataProvider):
                 "desc": "descricao",
                 "saldo_bruto": "saldo_bruto",
                 "instituicao_financeira": "instituicao_financeira",
-                "tipo_ativo": "tipo_ativo"
+                "tipo_ativo": "tipo_ativo",
+                "mv(estrategia)": "estrategia"
             }
             
             df = self._fetch_positions(date_report, portfolios, variable_names.keys())
