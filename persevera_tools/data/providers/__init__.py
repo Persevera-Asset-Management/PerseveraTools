@@ -13,6 +13,7 @@ from .kraneshares import KraneSharesProvider
 from .investing_com import InvestingComProvider
 from .debentures_com import DebenturesComProvider
 from .mdic import MDICProvider
+from .b3 import B3Provider
 
 __all__ = [
     # Base classes
@@ -22,5 +23,5 @@ __all__ = [
     'BloombergProvider', 'SGSProvider', 'FredProvider', 'SidraProvider', 
     'AnbimaProvider', 'SimplifyProvider', 'CVMProvider', 'InvescoProvider',
     'ComdinheiroProvider', 'BcbFocusProvider', 'KraneSharesProvider', 'InvestingComProvider',
-    'DebenturesComProvider', 'MDICProvider'
+    'DebenturesComProvider', 'MDICProvider', 'B3Provider'
 ]

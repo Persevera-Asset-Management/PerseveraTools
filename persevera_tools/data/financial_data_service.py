@@ -16,6 +16,7 @@ from .providers.kraneshares import KraneSharesProvider
 from .providers.investing_com import InvestingComProvider
 from .providers.debentures_com import DebenturesComProvider
 from .providers.mdic import MDICProvider
+from .providers.b3 import B3Provider
 from ..db.operations import to_sql
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ class FinancialDataService:
         self.investing_com = InvestingComProvider()
         self.debentures_com = DebenturesComProvider()
         self.mdic = MDICProvider()
+        self.b3 = B3Provider()
         self.logger = logging.getLogger(self.__class__.__name__)
         
     def get_bloomberg_data(
@@ -385,7 +387,7 @@ class FinancialDataService:
 
     def get_data(
         self,
-        source: Literal['sgs', 'fred', 'sidra', 'anbima', 'simplify', 'invesco', 'bcb_focus', 'kraneshares', 'mdic'],
+        source: Literal['sgs', 'fred', 'sidra', 'anbima', 'simplify', 'invesco', 'bcb_focus', 'kraneshares', 'mdic', 'b3'],
         save_to_db: bool = True,
         retry_attempts: int = 3,
         table_name: Optional[str] = None,
@@ -417,6 +419,7 @@ class FinancialDataService:
             'invesco': (self.invesco, 'indicadores'),
             'kraneshares': (self.kraneshares, 'indicadores'),
             'mdic': (self.mdic, 'indicadores'),
+            'b3': (self.b3, 'indicadores'),
         }
         
         if source not in providers:
