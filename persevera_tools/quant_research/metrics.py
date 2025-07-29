@@ -19,9 +19,10 @@ def calculate_sqn(close_prices: pd.Series, period: int = 100) -> pd.Series:
     Returns:
         A pandas Series containing the SQN values.
     """
-    close_difference = close_prices.pct_change()
+    close_prices = close_prices.dropna()
+    close_difference = (close_prices / close_prices.shift(1)) - 1
     sma_close_difference = close_difference.rolling(window=period).mean()
-    stdev_close_difference = close_difference.rolling(window=period).std()
+    stdev_close_difference = close_difference.rolling(window=period).std(ddof=0)
 
     sqn = (sma_close_difference * np.sqrt(period)) / stdev_close_difference
 
