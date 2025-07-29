@@ -7,8 +7,7 @@ import os
 from xbbg import blp
 
 from .base import DataProvider, DataRetrievalError
-from ..lookups import get_codes, get_bloomberg_codes
-from ..asset_info import get_securities_by_exchange
+from ..lookups import get_codes, get_bloomberg_codes, get_securities_by_exchange
 from ...config import settings
 from ...db.operations import read_sql
 
