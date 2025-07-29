@@ -6,7 +6,7 @@ import psycopg2
 import psycopg2.extras
 import sqlalchemy
 from sqlalchemy.exc import SQLAlchemyError
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 from psycopg2.errors import UniqueViolation
 from psycopg2 import sql
 
@@ -101,7 +101,7 @@ def to_sql(data: pd.DataFrame,
         engine.dispose()
 
 @timed
-def read_sql(sql_query: str, date_columns: Optional[List[str]] = None) -> pd.DataFrame:
+def read_sql(sql_query: str, params: Optional[Dict[str, Any]] = None, date_columns: Optional[List[str]] = None) -> pd.DataFrame:
     """Read data from SQL table based on the provided query."""
     # Extract table name from query for logging
     table_name = "unknown"
@@ -123,6 +123,7 @@ def read_sql(sql_query: str, date_columns: Optional[List[str]] = None) -> pd.Dat
             df = pd.read_sql_query(
                 sqlalchemy.text(sql_query),
                 con=connection,
+                params=params,
                 parse_dates=date_columns
             )
             duration = time.time() - start_time

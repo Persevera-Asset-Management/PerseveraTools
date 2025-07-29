@@ -3,23 +3,6 @@ from typing import Union, List, Dict
 
 from ..db.operations import read_sql
 
-def get_securities_by_exchange(exchange: str) -> Dict[str, str]:
-    """
-    Get securities information from database by exchange.
-    
-    Args:
-        exchange: Exchange code (e.g., 'BZ' for B3)
-        
-    Returns:
-        Dictionary mapping Bloomberg tickers to internal codes
-    """
-    query = f"SELECT * FROM b3_active_securities WHERE code_exchange = '{exchange}'"
-    df = read_sql(query)
-    df = df.assign(code_bloomberg=lambda x: x['code'] + ' ' + x['code_exchange'] + ' Equity')
-    df = df.drop(columns='code_exchange')
-    df = df.set_index('code_bloomberg')
-    return df['code'].to_dict()
-
 def get_equities_info(
     codes: Union[str, List[str]] = None,
     fields: Union[str, List[str]] = None
