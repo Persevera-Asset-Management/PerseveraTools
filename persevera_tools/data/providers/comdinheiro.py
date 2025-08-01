@@ -16,8 +16,8 @@ class ComdinheiroProvider(DataProvider):
     API_URL = "https://api.comdinheiro.com.br/v1/ep1/import-data"
     HEADERS = {'Content-Type': 'application/x-www-form-urlencoded'}
 
-    def __init__(self, start_date: str = '1980-01-01', username: str = None, password: str = None):
-        super().__init__(start_date)
+    def __init__(self, username: str = None, password: str = None):
+        super().__init__()
         self.username = username or COMDINHEIRO_USERNAME
         self.password = password or COMDINHEIRO_PASSWORD
 
@@ -75,7 +75,7 @@ class ComdinheiroProvider(DataProvider):
 
         report_url_params = {
             'nome_portfolio': portfolio,
-            'layout': 'ExtratoPerseveraOnshore_Prov',
+            'layout': 'ExtratoPerseveraOnshore',
             'data_ini': date_inception_str,
             'data_ini2': date_mtd_str,
             'data_ini3': date_ytd_str,
@@ -96,7 +96,7 @@ class ComdinheiroProvider(DataProvider):
             'el2_movext': '1|1||0',
             'el2_layout': 'V',
             'el2_campo_data_ini': date_mtd_str,
-            'el3_benchmarks': 'CDI',
+            'el3_benchmarks': 'CDI+IPCAdp+ipcadp%BE6%BCaa',
             'el3_graf_pl': '0',
             'el3_y_min': '',
             'el3_y_max': '',
@@ -113,7 +113,7 @@ class ComdinheiroProvider(DataProvider):
             'el7_mes_formato': 'V',
             'el7_mes_acumulado': '1',
             'el7_mes_max_anos': '1',
-            'el7_mes_benchs': 'CDI+percent(cdi)+IBOV+IPCAdp',
+            'el7_mes_benchs': 'CDI+percent(cdi)+IBOV+IPCAdp+IPCAdp%BE6%BCaa',
             'el7_cot_tir': 'cot',
             'el7_campo_data_ini': date_inception_str,
             'el8_variavel': 'performanceAttribution',
@@ -123,24 +123,32 @@ class ComdinheiroProvider(DataProvider):
             'el8_classe': 'TIPO',
             'el8_filtro': '',
             'el8_campo_data_ini': date_mtd_str,
-            'el9_colunas': 'cor+ativo+valor_bruto+cot(mes_atual)+cot(ano_atual)+percent_SB2',
-            'el9_ret_classe': '1',
-            'el9_ret_nulos': '0',
-            'el9_ret_bench_ativo': '',
-            'el9_linha_cart': '1',
+            'el9_variavel': 'performanceAttribution',
+            'el9_ordem': '1',
+            'el9_unidade': 'pp',
+            'el9_cores': 'd3d3d3t',
             'el9_classe': 'TIPO',
-            'el9_subclasse': '',
             'el9_filtro': '',
-            'el10_colunas': 'cor+ativo+saldoBrutoIni+aplicacoes+resgates+rendimento_nominal+saldoBrutoFim+percentual_SB',
+            'el9_campo_data_ini': date_ytd_str,
+            'el10_colunas': 'cor+ativo+valor_bruto+cot(mes_atual)+cot(ano_atual)+percent_SB2',
+            'el10_ret_classe': '1',
+            'el10_ret_nulos': '0',
+            'el10_ret_bench_ativo': '',
+            'el10_bench_classe': '',
+            'el10_linha_cart': '1',
             'el10_classe': 'TIPO',
             'el10_subclasse': '',
             'el10_filtro': '',
-            'el10_campo_data_ini': date_mtd_str,
-            'el11_liq': '0+1+3+16+91+360|corridos|ambos|0|2|bru+per_bru|tabela|1',
-            'el12_colunas': 'data_liquidacao+classe+descricao+operacao+quantidade+valor_bruto',
-            'el12_filtro': 'Fund+TitPub+Acoes+Deb+TitPriv+Clube+MercFut+Gen+Prev+CriCra+Poup+Opcoes+FundOff+Bond',
-            'el12_filtro_cv': 'AM+C+DV+IN+SP+T+TIF+VN+V+VT',
-            'el12_campo_data_ini': date_mtd_str,
+            'el11_colunas': 'cor+ativo+saldoBrutoIni+aplicacoes+resgates+rendimento_nominal+saldoBrutoFim+percentual_SB',
+            'el11_classe': 'TIPO',
+            'el11_subclasse': '',
+            'el11_filtro': '',
+            'el11_campo_data_ini': date_mtd_str,
+            'el12_liq': '0+1+3+16+91+360|corridos|ambos|0|2|bru+per_bru|tabela|1',
+            'el13_colunas': 'data_liquidacao+classe+descricao+operacao+quantidade+valor_bruto',
+            'el13_filtro': 'Fund+TitPub+Acoes+Deb+TitPriv+Clube+MercFut+Gen+Prev+CriCra+Poup+Opcoes+FundOff+Bond',
+            'el13_filtro_cv': 'AM+C+DV+IN+SP+T+TIF+VN+V+VT',
+            'el13_campo_data_ini': date_mtd_str,
         }
         report_url = "MeuExtrato/MeuExtrato001.php?" + urlencode(report_url_params)
 
@@ -163,12 +171,12 @@ class ComdinheiroProvider(DataProvider):
             if 'tables' in data:
                 tables = {}
                 table_codes = {
-                    'tab0': 'Rentabilidade Líquida de taxas',
+                    'tab0': 'Rentabilidade Bruta',
                     'tab1': 'Resumo Financeiro - no Mês',
                     'tab2': 'Rentabilidades mês a mês',
                     'tab3': 'Rentabilidade Ativos por Classe',
                     'tab4': 'Posição Consolidada - No Mês',
-                    'tab5': 'Liquidez Carteira',
+                    'tab5': 'Liquidez dos Ativos',
                     'tab6': 'Movimentações - no Mês',
                 }
                 for table_code, table_name in table_codes.items():
@@ -242,7 +250,6 @@ class ComdinheiroProvider(DataProvider):
             portfolio = kwargs.get('portfolio')
             date_inception = kwargs.get('date_inception')
             date_report = kwargs.get('date_report')
-
 
             if not all([portfolio, date_inception, date_report]):
                 raise ValueError("`portfolio`, `date_inception`, and `date_report` must be provided for 'portfolio_statement'")
