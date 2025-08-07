@@ -17,7 +17,8 @@ dependencies = [
     "sidrapy",
     "fredapi",
     "python-bcb",
-    "requests"
+    "requests",
+    "statsmodels"
 ]
 
 [tool.setuptools.dynamic]

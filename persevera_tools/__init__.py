@@ -5,4 +5,4 @@ from . import utils
 from . import db
 from . import data
 
-__version__ = "0.9.5"
+__version__ = "0.9.6"

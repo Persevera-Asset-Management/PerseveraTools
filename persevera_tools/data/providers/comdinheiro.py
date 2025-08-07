@@ -63,6 +63,50 @@ class ComdinheiroProvider(DataProvider):
         except ValueError:
             raise DataRetrievalError("Failed to decode JSON from response.")
 
+    def _fetch_historical_positions(self, start_date: str, end_date: str, portfolios: list[str], variables: list[str]) -> pd.DataFrame:
+        """
+        Fetches historical portfolio positions from the Comdinheiro API.
+        """
+        start_date_str = datetime.strptime(start_date, '%Y-%m-%d').strftime('%d%m%Y')
+        end_date_str = datetime.strptime(end_date, '%Y-%m-%d').strftime('%d%m%Y')
+        report_url_params = {
+            'data_analise': end_date_str,
+            'data_ini': start_date_str,
+            'nome_portfolio': '+'.join(portfolios),
+            'variaveis': '+'.join(variables),
+            'filtro': 'all',
+            'filtro_IF': 'todos',
+            'layout': '0',
+            'layoutB': '0',
+            'enviar_email': '0',
+        }
+        report_url = "RelatorioGerencialCarteiras001.php?" + urlencode(report_url_params)
+
+        payload_params = {
+            "username": self.username,
+            "password": self.password,
+            "URL": report_url,
+            "format": "json3",
+        }
+        payload = urlencode(payload_params)
+
+        try:
+            response = requests.post(self.API_URL, data=payload, headers=self.HEADERS)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise DataRetrievalError(f"API request failed: {e}")
+
+        try:
+            data = response.json()
+            if 'tables' in data and 'tab0' in data['tables']:
+                df = pd.DataFrame(data['tables']['tab0']).set_index('lin0').T.reset_index(drop=True)
+                return df
+            else:
+                self.logger.warning("Received unexpected data structure from API: %s", data)
+                return pd.DataFrame()
+        except ValueError:
+            raise DataRetrievalError("Failed to decode JSON from response.")
+
     def _fetch_statement(self, portfolio: str, date_inception: str, date_report: str) -> dict[str, pd.DataFrame]:
         """
         Fetches portfolio statement from the Comdinheiro API.
@@ -205,6 +249,11 @@ class ComdinheiroProvider(DataProvider):
         - date_inception (str): The inception date in 'YYYY-MM-DD' format (maps to data_ini).
         - date_report (str): The report date in 'YYYY-MM-DD' format (maps to data_fim).
 
+        For 'portfolio_historical_positions', kwargs must contain:
+        - portfolios (list[str]): A list of portfolio names.
+        - start_date (str): The start date in 'YYYY-MM-DD' format.
+        - end_date (str): The end date in 'YYYY-MM-DD' format.
+
         Args:
             category (str): The category of data to retrieve. Defaults to 'portfolio_positions'.
             **kwargs: Additional arguments.
@@ -260,6 +309,35 @@ class ComdinheiroProvider(DataProvider):
                 return {}
             
             return dfs
+
+        elif data_type == 'portfolio_historical_positions':
+            portfolios = kwargs.get('portfolios')
+            start_date = kwargs.get('start_date')
+            end_date = kwargs.get('end_date')
+
+            if not all([portfolios, start_date, end_date]):
+                raise ValueError("`portfolios`, `start_date`, and `end_date` must be provided for 'portfolio_historical_positions'")
+            
+            variable_names = {
+                "data_analise": "date",
+                "nome_portfolio": "carteira",
+                "ativo": "ativo",
+                "desc": "descricao",
+                "saldo_bruto": "saldo_bruto",
+            }
+            
+            df = self._fetch_historical_positions(start_date, end_date, portfolios, variable_names.keys())
+
+            if df.empty:
+                return pd.DataFrame()
+
+            df.columns = variable_names.values()
+            df['date'] = pd.to_datetime(df['date'], format='%d/%m/%Y')
+
+            if 'saldo_bruto' in df.columns:
+                df['saldo_bruto'] = pd.to_numeric(df['saldo_bruto'], errors='coerce')
+            
+            return df
 
         else:
             raise NotImplementedError(f"Data type '{data_type}' not supported for Comdinheiro provider.")
