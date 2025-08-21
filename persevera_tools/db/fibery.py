@@ -100,11 +100,10 @@ def read_fibery(table_name: str, include_fibery_fields: bool = False) -> pd.Data
     api_url = _get_fibery_api_url("commands")
     headers = _get_fibery_headers()
     all_entities = []
-    page_size = 1000  # Fibery recommends up to 1000
+    page_size = 'q/no-limit'  # Fibery recommends up to 1000
 
     # Make a copy of fields to query to safely remove items from it
     current_fields_to_query = list(fields_to_query)
-
     while True:  # retry loop
         query = {
             "q/from": canonical_name,
@@ -146,7 +145,10 @@ def read_fibery(table_name: str, include_fibery_fields: bool = False) -> pd.Data
             
             # This logic assumes that if we receive less than page_size results, we are on the last page.
             # Fibery pagination can also be done with a start token, but this is a simpler approach that should work for most cases.
-            if len(page_entities) < page_size:
+            if isinstance(page_size, int):
+                if len(page_entities) < page_size:
+                    break # from pagination loop
+            else:
                 break # from pagination loop
 
         except requests.exceptions.RequestException as e:
