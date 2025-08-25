@@ -70,6 +70,7 @@ class CVMProvider(DataProvider):
                                 df = pd.read_csv(csv_file_retry, sep=';', usecols=cols_new.keys(), encoding='latin-1', engine="pyarrow", parse_dates=['DT_COMPTC'])
                                 df = df.rename(columns=cols_new)
                     
+                    df = df[df['fund_nav'] > 0]
                     # df = df.drop(columns=['fund_type'], errors='ignore')
                     # df = df.drop_duplicates()
 
