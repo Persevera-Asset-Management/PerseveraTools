@@ -1,5 +1,6 @@
 from bcb import Expectativas
 import pandas as pd
+import numpy as np
 import unicodedata
 
 from .base import DataProvider, DataRetrievalError, ValidationError
@@ -126,7 +127,7 @@ class BcbFocusProvider(DataProvider):
                 ep.query()
                 .filter(ep.Indicador == indicator)
                 .filter(ep.baseCalculo == 0)
-                .filter(ep.Data >= self.start_date.strftime("%Y-%m-%d"))
+                # .filter(ep.Data >= self.start_date.strftime("%Y-%m-%d"))
                 .collect()
             )
         except Exception as e:
@@ -160,6 +161,53 @@ class BcbFocusProvider(DataProvider):
 
         return long_df
 
+    def _get_next_12m_expectations(self, indicator: str) -> pd.DataFrame:
+        """Retrieve next 12m market expectations."""
+        self.logger.info(f"Retrieving next 12m {indicator} expectations from BCB Focus...")
+        try:
+            ep = self.em.get_endpoint("ExpectativasMercadoInflacao12Meses")
+            df = (
+                ep.query()
+                .filter(ep.Indicador == indicator)
+                .filter(ep.baseCalculo == 0)
+                .filter(ep.Data >= self.start_date.strftime("%Y-%m-%d"))
+                .collect()
+            )
+        except Exception as e:
+            raise DataRetrievalError(
+                f"Failed to retrieve {indicator} expectations from BCB Focus: {e}"
+            )
+
+        if df.empty:
+            self.logger.warning(f"No {indicator} expectations data retrieved.")
+            return pd.DataFrame()
+
+        df = df.drop(columns=["baseCalculo"])
+        df.columns = [
+            "indicator",
+            "date",
+            "smoothed",
+            "average",
+            "median",
+            "std",
+            "minimum",
+            "maximum",
+            "total_responses",
+        ]
+
+        df["code"] = np.where(
+            df["smoothed"] == "S",
+            f"br_focus_{self._slugify(indicator)}_median_ntm_smoothed",
+            f"br_focus_{self._slugify(indicator)}_median_ntm",
+        )
+
+        df = df[["code", "date", "median"]]
+
+        long_df = df.melt(id_vars=["code", "date"], var_name="field", value_name="value")
+        long_df["field"] = "close"
+
+        return long_df
+
     def get_data(self, category: str, **kwargs) -> pd.DataFrame:
         """
         Retrieve data from BCB Focus.
@@ -172,12 +220,13 @@ class BcbFocusProvider(DataProvider):
         selic_df = self._get_selic_expectations()
         ipca_monthly_df = self._get_monthly_expectations("IPCA")
         ipca_annual_df = self._get_annual_expectations("IPCA")
+        ipca_next_12m_df = self._get_next_12m_expectations("IPCA")
         us_dollar_df = self._get_annual_expectations("Câmbio")
         pib_df = self._get_annual_expectations("PIB Total")
 
-        if selic_df.empty and ipca_monthly_df.empty and ipca_annual_df.empty and us_dollar_df.empty and pib_df.empty:
+        if selic_df.empty and ipca_monthly_df.empty and ipca_annual_df.empty and ipca_next_12m_df.empty and us_dollar_df.empty and pib_df.empty:
             raise DataRetrievalError("No data retrieved from BCB Focus")
 
-        df = pd.concat([selic_df, ipca_monthly_df, ipca_annual_df, us_dollar_df, pib_df], ignore_index=True)
+        df = pd.concat([selic_df, ipca_monthly_df, ipca_annual_df, ipca_next_12m_df, us_dollar_df, pib_df], ignore_index=True)
 
         return self._validate_output(df)
