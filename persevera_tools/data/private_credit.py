@@ -298,9 +298,10 @@ def calculate_spread(index_code: str,
     emissions = emissions[emissions['code'].isin(series.columns)]
 
     volume_map = emissions.set_index('code')['volume_emissao']
-    volume_df = pd.DataFrame({col: volume_map[col] for col in series.columns}, index=series.index)
-    
-    volume_df = (volume_df * (series > 0)).replace(0., np.nan)
+    # volume_df = pd.DataFrame({col: volume_map[col] for col in series.columns}, index=series.index)
+    # volume_df = (volume_df * (series > 0)).replace(0., np.nan)
+
+    volume_df = series.where(series.isna(), 1) * volume_map
     weight_df = volume_df.div(volume_df.sum(axis=1), axis=0)
 
     # Calculate the spread
@@ -315,7 +316,9 @@ def calculate_spread(index_code: str,
         spread['volume_above_mean'] = ((series.T > spread['mean'].values).T * volume_df).sum(axis=1)
         spread['volume_under_mean'] = ((series.T <= spread['mean'].values).T * volume_df).sum(axis=1)
         
-        spread['count_yield_0_50bp'] = (series.T < 0.50).T.sum(axis=1)
+        spread['count_yield_under_neg50bp'] = ((series.T < -0.50)).T.sum(axis=1)
+        spread['count_yield_neg50_0bp'] = ((series.T >= -0.50) & (series.T < 0.)).T.sum(axis=1)
+        spread['count_yield_0_50bp'] = ((series.T >= 0.) & (series.T < 0.50)).T.sum(axis=1)
         spread['count_yield_50_75bp'] = ((series.T >= 0.50) & (series.T < 0.75)).T.sum(axis=1)
         spread['count_yield_75_100bp'] = ((series.T >= 0.75) & (series.T < 1.00)).T.sum(axis=1)
         spread['count_yield_100_150bp'] = ((series.T >= 1.00) & (series.T < 1.50)).T.sum(axis=1)
