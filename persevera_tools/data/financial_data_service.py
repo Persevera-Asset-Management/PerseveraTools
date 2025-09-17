@@ -421,7 +421,7 @@ class FinancialDataService:
                         to_sql(
                             data=df,
                             table_name=table_name,
-                            primary_keys=['code', 'date', 'field'],
+                            primary_keys=['code', 'date', 'maturity', 'field'],
                             update=True,
                             batch_size=5000
                         )
