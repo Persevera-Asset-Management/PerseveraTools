@@ -279,9 +279,14 @@ def calculate_spread(index_code: str,
         series = series.interpolate(limit=5)
     elif index_code == 'IPCA':
         codes = emissions['code'].tolist()
-        series = get_series(code=codes, category='credito_privado_ipca', start_date=start_date, end_date=end_date, field=field)
+        series_ipca = get_series(code=codes, category='credito_privado_ipca', start_date=start_date, end_date=end_date, field=field)
+        series_ipca = series_ipca.replace(0., np.nan)
+        series_ipca_interpolated = series_ipca.pivot_table(index='date', columns='code', values='value').interpolate(limit=5).stack().reset_index()
+        series_ipca_interpolated = pd.merge(series_ipca_interpolated, series_ipca[['code', 'reference']].drop_duplicates(), on=['code'], how='left').dropna().drop_duplicates()
+        series_ipca_interpolated.columns = ['date', 'code', 'value', 'reference']
+
         series_titulos_publicos = get_series(code='NTN-B', category='titulos_publicos', start_date=start_date, end_date=end_date, field=field)
-        series_merged = pd.merge(series, series_titulos_publicos, left_on=['date', 'reference'], right_on=['date', 'maturity'], how='inner')
+        series_merged = pd.merge(series_ipca_interpolated, series_titulos_publicos, left_on=['date', 'reference'], right_on=['date', 'maturity'], how='inner')
         series_merged = series_merged.drop(columns=['code_y', 'maturity', 'reference'])
         series_merged.columns = ['date', 'code', 'yield_to_maturity', 'ytm_ntnb']
         series_merged['spread'] = series_merged['yield_to_maturity'] - series_merged['ytm_ntnb']
