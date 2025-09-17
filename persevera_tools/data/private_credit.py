@@ -286,6 +286,7 @@ def calculate_spread(index_code: str,
         series_merged.columns = ['date', 'code', 'yield_to_maturity', 'ytm_ntnb']
         series_merged['spread'] = series_merged['yield_to_maturity'] - series_merged['ytm_ntnb']
         series = series_merged.pivot_table(index='date', columns='code', values='spread')
+        series = series.interpolate(limit=5)
     else:
         raise ValueError("Invalid index code")
     
