@@ -28,12 +28,19 @@ class AnbimaProvider(DataProvider):
         """
         self._log_processing(category)
         
-        df = self._read_anbima_files()
+        if category == 'anbima_debentures':
+            return self.get_debentures_data(category, **kwargs)
+        elif category == 'anbima_titulos_publicos':
+            return self.get_titulos_publicos_data(category, **kwargs)
+        else:
+            raise ValueError(f"Invalid category: {category}")
+
+        # df = self._read_anbima_files()
         
-        if df.empty:
-            raise DataRetrievalError("No data retrieved from ANBIMA")
+        # if df.empty:
+        #     raise DataRetrievalError("No data retrieved from ANBIMA")
             
-        return self._validate_output(df)
+        # return self._validate_output(df)
 
     def _read_anbima_files(self) -> pd.DataFrame:
         """Read ANBIMA files from URL."""
@@ -137,4 +144,80 @@ class AnbimaProvider(DataProvider):
         df['Referência NTN-B'] = pd.to_datetime(df['Referência NTN-B'], format='%d/%m/%Y', errors='coerce')
         df.columns = ['code', 'yield_to_maturity', 'price_close', 'duration', 'reference']
         df['date'] = date
+        return df
+
+    def get_titulos_publicos_data(self, category: str, **kwargs) -> pd.DataFrame:
+        """
+        Retrieves and parses ANBIMA titulos publicos data for a specific date.
+
+        Args:
+            date: The date for which to retrieve the data.
+
+        Returns:
+            A DataFrame with the parsed titulos publicos data.
+        """
+        self._log_processing(category)
+        
+        data_frames = []
+        for date in pd.bdate_range(start=self.start_date, end=datetime.today(), freq='B'):
+            url = f"https://www.anbima.com.br/informacoes/merc-sec/arqs/ms{date.strftime('%y%m%d')}.txt"
+            content = None
+            try:
+                with urllib.request.urlopen(url) as response:
+                    content = response.read().decode('latin-1')
+            except Exception as e:
+                self.logger.error(f"Failed to download titulos publicos file from {url}: {e}")
+                continue
+                
+            if content:
+                try:
+                    parsed_df = self._parse_titulos_publicos_file(content)
+                    if not parsed_df.empty:
+                        data_frames.append(parsed_df)
+                except Exception as e:
+                    self.logger.error(f"Failed to parse titulos publicos file: {e}")
+
+        if not data_frames:
+            raise DataRetrievalError("No data retrieved from ANBIMA titulos publicos")
+        
+        df = pd.concat(data_frames, ignore_index=True)
+        
+        df = df.melt(
+            id_vars=['code', 'date', 'maturity'], 
+            var_name='field'
+        )
+        df = df.replace({np.nan: None})
+        return df
+
+    def _parse_titulos_publicos_file(self, content: str) -> pd.DataFrame:
+        """
+        Parses the content of an ANBIMA titulos publicos TXT file.
+
+        Args:
+            content: The string content of the file.
+
+        Returns:
+            A DataFrame with the parsed data.
+        """
+        lines = content.splitlines()
+        if len(lines) < 4:
+            return pd.DataFrame()
+            
+        header = lines[2].split('@')
+        data = [line.split('@') for line in lines[3:]]
+
+        df = pd.DataFrame(data, columns=header)
+
+        df = df[['Titulo', 'Data Referencia', 'Data Vencimento', 'Tx. Indicativas', 'PU']]
+
+        def clean_value(v):
+            return v.strip().replace('.', '').replace(',', '.').replace('--', '0') if v.strip() else None
+
+        df = df.map(clean_value)
+
+        cols_num = ['Tx. Indicativas', 'PU']
+        df[cols_num] = df[cols_num].apply(lambda x: pd.to_numeric(x, errors='coerce'))
+        df['Data Referencia'] = pd.to_datetime(df['Data Referencia'], format='%Y%m%d', errors='coerce')
+        df['Data Vencimento'] = pd.to_datetime(df['Data Vencimento'], format='%Y%m%d', errors='coerce')
+        df.columns = ['code', 'date', 'maturity', 'yield_to_maturity', 'price_close']
         return df

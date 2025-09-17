@@ -352,7 +352,64 @@ class FinancialDataService:
         
         while attempt < retry_attempts:
             try:
-                df = self.anbima.get_debentures_data(category='anbima_debentures')
+                df = self.anbima.get_data(category='anbima_debentures')
+                
+                if df.empty:
+                    self.logger.warning(f"No data retrieved from ANBIMA")
+                    return df
+                
+                if save_to_db:
+                    self.logger.info(f"Saving {len(df)} rows to table '{table_name}'")
+                    try:
+                        to_sql(
+                            data=df,
+                            table_name=table_name,
+                            primary_keys=['code', 'date', 'field'],
+                            update=True,
+                            batch_size=5000
+                        )
+                    except Exception as e:
+                        self.logger.error(f"Failed to save data to database: {str(e)}")
+                        raise
+                
+                return df
+                
+            except Exception as e:
+                attempt += 1
+                last_error = e
+                self.logger.warning(f"Attempt {attempt} failed: {str(e)}")
+                if attempt < retry_attempts:
+                    self.logger.info(f"Retrying... ({attempt}/{retry_attempts})")
+        
+        error_msg = f"Failed to retrieve data from ANBIMA after {retry_attempts} attempts. Last error: {str(last_error)}"
+        self.logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
+    def get_anbima_titulos_publicos_data(
+        self,
+        save_to_db: bool = False,
+        retry_attempts: int = 3,
+        table_name: str = 'anbima_titulos_publicos_historico'
+    ) -> pd.DataFrame:
+        """
+        Retrieve economic calendar data from ANBIMA.
+        
+        Args:
+            save_to_db: Whether to save the data to the database.
+            retry_attempts: Number of retry attempts.
+            table_name: The database table name to store economic calendar data.
+            
+        Returns:
+            DataFrame with economic calendar data.
+        """
+        self.logger.info(f"Retrieving emissions data from ANBIMA")
+        
+        attempt = 0
+        last_error = None
+        
+        while attempt < retry_attempts:
+            try:
+                df = self.anbima.get_data(category='anbima_titulos_publicos')
                 
                 if df.empty:
                     self.logger.warning(f"No data retrieved from ANBIMA")
