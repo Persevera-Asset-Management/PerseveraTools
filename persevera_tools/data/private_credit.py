@@ -4,17 +4,20 @@ import pandas as pd
 import numpy as np
 from itertools import product
 
-from ..db.operations import read_sql
+# from ..db.operations import read_sql
+from persevera_tools.db.operations import read_sql
 
 def get_emissions(index_code: Optional[Union[str, List[str]]] = None,
                   start_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
-                  selected_fields: Optional[List[str]] = None) -> pd.DataFrame:
+                  selected_fields: Optional[List[str]] = None,
+                  deb_incent_lei_12431: Optional[bool] = None) -> pd.DataFrame:
     """Get emissions from credito_privado_emissoes table.
     
     Args:
         index_code: Single index code, list of index codes, or None to retrieve all codes.
         start_date: Optional start date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp
         selected_fields: Optional list of fields to retrieve
+        deb_incent_lei_12431: Whether to retrieve emissions under the Debêntures Incentivadas by Lei 12431 (default: None)
     Returns:
         DataFrame with emissions data, indexed by 'data_emissao'.
     """
@@ -69,6 +72,12 @@ def get_emissions(index_code: Optional[Union[str, List[str]]] = None,
     if start_date_str:
         where_clauses.append(f"data_emissao >= '{start_date_str}'")
         
+    if deb_incent_lei_12431 is not None:
+        if deb_incent_lei_12431:
+            where_clauses.append(f"deb_incent_lei_12431 = TRUE")
+        else:
+            where_clauses.append(f"deb_incent_lei_12431 = FALSE")
+        
     if where_clauses:
         query += " WHERE " + " AND ".join(where_clauses)
         
@@ -88,7 +97,8 @@ def get_emissions(index_code: Optional[Union[str, List[str]]] = None,
     
     return df
 
-def get_series(code: Optional[Union[str, List[str]]] = None, 
+def get_series(code: Optional[Union[str, List[str]]] = None,
+               category: Optional[str] = None,
                start_date: Optional[Union[str, datetime, pd.Timestamp]] = None, 
                end_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
                field: Union[str, List[str]] = 'yield_to_maturity') -> Union[pd.DataFrame, pd.Series]:
@@ -169,10 +179,26 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
         raise ValueError("end_date cannot be before start_date")
 
     # Build query using validated parameters
+    if category == 'credito_privado_di':
+        table_name = 'credito_privado_historico'
+        cols = ['date', 'code', 'field', 'value']
+        date_cols = ['date']
+    elif category == 'credito_privado_ipca':
+        table_name = 'credito_privado_historico'
+        cols = ['date', 'code', 'reference', 'value']
+        date_cols = ['date', 'reference']
+    elif category == 'titulos_publicos':
+        table_name = 'anbima_titulos_publicos_historico'
+        cols = ['date', 'code', 'maturity', 'value']
+        date_cols = ['date', 'maturity']
+    else:
+        raise ValueError("Invalid category")
+
     fields_str = "','".join(fields)
+    cols_str = ",".join(cols)
     query = f"""
-        SELECT date, code, field, value 
-        FROM credito_privado_historico 
+        SELECT {cols_str}
+        FROM {table_name} 
         WHERE field IN ('{fields_str}')
     """
 
@@ -187,7 +213,9 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
         
     query += " ORDER BY date, code, field"
     
-    df = read_sql(query, date_columns=['date'])
+    df = read_sql(query, date_columns=date_cols)
+    if category in ['credito_privado_ipca', 'titulos_publicos']:
+        return df
     
     if df.empty:
         if codes:
@@ -229,7 +257,8 @@ def calculate_spread(index_code: str,
                      start_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
                      end_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
                      field: Union[str, List[str]] = 'yield_to_maturity',
-                     calculate_distribution: bool = False) -> pd.DataFrame:
+                     calculate_distribution: bool = False,
+                     deb_incent_lei_12431: Optional[bool] = None) -> pd.DataFrame:
     """Calculate the spread for a given code.
     
     Args:
@@ -242,16 +271,24 @@ def calculate_spread(index_code: str,
         DataFrame with spread data, indexed by 'date'.
     """
     # Get the series for the index
-    emissions = get_emissions(index_code=index_code)
+    emissions = get_emissions(index_code=index_code, deb_incent_lei_12431=deb_incent_lei_12431)
     
     if index_code == 'DI':
         codes = emissions[emissions['percentual_multiplicador_rentabilidade'] == 100]['code'].tolist()
-    else:
+        series = get_series(code=codes, category='credito_privado_di', start_date=start_date, end_date=end_date, field=field)
+        series = series.interpolate(limit=5)
+    elif index_code == 'IPCA':
         codes = emissions['code'].tolist()
+        series = get_series(code=codes, category='credito_privado_ipca', start_date=start_date, end_date=end_date, field=field)
+        series_titulos_publicos = get_series(code='NTN-B', category='titulos_publicos', start_date=start_date, end_date=end_date, field=field)
+        series_merged = pd.merge(series, series_titulos_publicos, left_on=['date', 'reference'], right_on=['date', 'maturity'], how='inner')
+        series_merged = series_merged.drop(columns=['code_y', 'maturity', 'reference'])
+        series_merged.columns = ['date', 'code', 'yield_to_maturity', 'ytm_ntnb']
+        series_merged['spread'] = series_merged['yield_to_maturity'] - series_merged['ytm_ntnb']
+        series = series_merged.pivot_table(index='date', columns='code', values='spread')
+    else:
+        raise ValueError("Invalid index code")
     
-    series = get_series(code=codes, start_date=start_date, end_date=end_date, field=field)
-    series = series.interpolate(limit=5)
-
     emissions = emissions[emissions['code'].isin(series.columns)]
 
     volume_map = emissions.set_index('code')['volume_emissao']
