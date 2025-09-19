@@ -28,7 +28,9 @@ class AnbimaProvider(DataProvider):
         """
         self._log_processing(category)
         
-        if category == 'anbima_debentures':
+        if category == 'anbima_indices':
+            return self._read_anbima_files()
+        elif category == 'anbima_debentures':
             return self.get_debentures_data(category, **kwargs)
         elif category == 'anbima_titulos_publicos':
             return self.get_titulos_publicos_data(category, **kwargs)
