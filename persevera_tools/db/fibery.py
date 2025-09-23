@@ -89,7 +89,7 @@ def read_fibery(table_name: str, include_fibery_fields: bool = False) -> pd.Data
     canonical_name = table_meta['canonical_name']
     fields_to_query = table_meta['fields']
     
-    str_to_remove = ['_deleted', 'Collaboration', 'Description', 'created-by']
+    str_to_remove = ['_deleted', 'Collaboration', 'Description', 'created-by', 'comments/comments']
     if not include_fibery_fields:
         str_to_remove.append('fibery/')
 
@@ -124,11 +124,14 @@ def read_fibery(table_name: str, include_fibery_fields: bool = False) -> pd.Data
 
                 if error_name == 'entity.error/query-primitive-field-expr-invalid':
                     error_data = error_info.get('data', {})
-                    top_error = error_data.get('top', {})
-                    field_to_remove = top_error.get('field', [None])[0]
+                    # top_error = error_data.get('top', {})
+                    # field_to_remove = top_error.get('field', [None])[0]
+                    field_to_remove = error_data.get('field', [None])[0]
+                    print(f"Field to remove: {field_to_remove}")
 
                     if field_to_remove and field_to_remove in current_fields_to_query:
                         logger.warning(f"Field '{field_to_remove}' is not primitive. Removing it from the query and retrying.")
+                        # print(f"Field '{field_to_remove}' is not primitive. Removing it from the query and retrying.")
                         current_fields_to_query.remove(field_to_remove)
                         continue  # retry request with modified fields
                     else:
