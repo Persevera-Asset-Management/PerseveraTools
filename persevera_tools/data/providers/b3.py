@@ -6,7 +6,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
 
 from .base import DataProvider, DataRetrievalError
+from ...utils.logging import get_logger
 
+logger = get_logger(__name__)
 
 class B3Provider(DataProvider):
     """
@@ -45,7 +47,7 @@ class B3Provider(DataProvider):
         dt_str = format(dt, "%Y-%m-%d")
         api_path = self.api_map.get(category)
         if not api_path:
-            self.logger.warning(f"Category '{category}' not supported by B3Provider.")
+            logger.warning(f"Category '{category}' not supported by B3Provider.")
             return pd.DataFrame()
 
         url = f"https://arquivos.b3.com.br/bdi/table/{api_path}/{dt_str}/{dt_str}/1/100"
@@ -63,7 +65,7 @@ class B3Provider(DataProvider):
             )
             date_of_data_str = date_of_data.strftime("%Y-%m-%d")
 
-            self.logger.info(f"Successfully fetched B3 data for {date_of_data_str}")
+            logger.info(f"Successfully fetched B3 data for {date_of_data_str}")
 
             headers_en = [
                 "investorTypes",
@@ -87,15 +89,15 @@ class B3Provider(DataProvider):
 
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 500:
-                self.logger.info(f"No data for {dt_str} (server returned 500).")
+                logger.info(f"No data for {dt_str} (server returned 500).")
             else:
-                self.logger.warning(f"HTTP error for {dt_str}: {e}")
+                logger.warning(f"HTTP error for {dt_str}: {e}")
             return pd.DataFrame()
         except json.JSONDecodeError as e:
-            self.logger.error(f"Failed to decode JSON for {dt_str}: {e}")
+            logger.error(f"Failed to decode JSON for {dt_str}: {e}")
             return pd.DataFrame()
         except Exception as e:
-            self.logger.error(f"Failed to fetch data for {dt_str}: {e}")
+            logger.error(f"Failed to fetch data for {dt_str}: {e}")
             return pd.DataFrame()
 
     def _fetch_data_in_range(

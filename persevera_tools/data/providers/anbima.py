@@ -6,8 +6,9 @@ from datetime import datetime, timedelta
 import numpy as np
 from ..lookups import get_codes
 from .base import DataProvider, DataRetrievalError
+from ...utils.logging import get_logger
 
-# Suppress openpyxl warning about workbooks without default styles
+logger = get_logger(__name__)
 warnings.filterwarnings("ignore", message="Workbook contains no default style", category=UserWarning)
 
 class AnbimaProvider(DataProvider):
@@ -51,7 +52,7 @@ class AnbimaProvider(DataProvider):
 
         for url, index_name in securities_list.items():
             try:
-                self.logger.info(f"Reading {index_name} from {url}")
+                logger.info(f"Reading {index_name} from {url}")
                 try:
                     temp = pd.read_excel(url, usecols="B:C", engine="openpyxl")
                 except:
@@ -62,7 +63,7 @@ class AnbimaProvider(DataProvider):
                 data_frames.append(temp)
                 
             except Exception as e:
-                self.logger.warning(f"Failed to process {index_name}: {str(e)}")
+                logger.warning(f"Failed to process {index_name}: {str(e)}")
         
         if not data_frames:
             return pd.DataFrame()
@@ -92,7 +93,7 @@ class AnbimaProvider(DataProvider):
                 with urllib.request.urlopen(url) as response:
                     content = response.read().decode('latin-1')
             except Exception as e:
-                self.logger.error(f"Failed to download debentures file from {url}: {e}")
+                logger.error(f"Failed to download debentures file from {url}: {e}")
                 continue
                 
             if content:
@@ -101,7 +102,7 @@ class AnbimaProvider(DataProvider):
                     if not parsed_df.empty:
                         data_frames.append(parsed_df)
                 except Exception as e:
-                    self.logger.error(f"Failed to parse debentures file: {e}")
+                    logger.error(f"Failed to parse debentures file: {e}")
 
         if not data_frames:
             raise DataRetrievalError("No data retrieved from ANBIMA debentures")
@@ -168,7 +169,7 @@ class AnbimaProvider(DataProvider):
                 with urllib.request.urlopen(url) as response:
                     content = response.read().decode('latin-1')
             except Exception as e:
-                self.logger.error(f"Failed to download titulos publicos file from {url}: {e}")
+                logger.error(f"Failed to download titulos publicos file from {url}: {e}")
                 continue
                 
             if content:
@@ -177,7 +178,7 @@ class AnbimaProvider(DataProvider):
                     if not parsed_df.empty:
                         data_frames.append(parsed_df)
                 except Exception as e:
-                    self.logger.error(f"Failed to parse titulos publicos file: {e}")
+                    logger.error(f"Failed to parse titulos publicos file: {e}")
 
         if not data_frames:
             raise DataRetrievalError("No data retrieved from ANBIMA titulos publicos")
