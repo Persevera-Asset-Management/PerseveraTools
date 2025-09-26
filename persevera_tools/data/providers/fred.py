@@ -5,9 +5,9 @@ from fredapi import Fred
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_codes
 from ...config import settings
-import logging
+from ...utils.logging import get_logger, timed
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 FRED_API_KEY = settings.FRED_API_KEY
 
