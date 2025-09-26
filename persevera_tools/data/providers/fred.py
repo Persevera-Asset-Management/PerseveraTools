@@ -5,6 +5,9 @@ from fredapi import Fred
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_codes
 from ...config import settings
+import logging
+
+logger = logging.getLogger(__name__)
 
 FRED_API_KEY = settings.FRED_API_KEY
 
@@ -21,6 +24,8 @@ class FredProvider(DataProvider):
         """
         super().__init__(start_date)
         self.fred = Fred(api_key=api_key or FRED_API_KEY)
+        print(f"FRED API key: {FRED_API_KEY}")
+        logger.info(f"FRED API key: {FRED_API_KEY}")
     
     def get_data(self, category: str, **kwargs) -> pd.DataFrame:
         """

@@ -47,7 +47,7 @@ class FinancialDataService:
             fields_mapping=bloomberg_fields_mapping,
         )
         self.sgs = SGSProvider(start_date=start_date)
-        self.fred = FredProvider(start_date=start_date, api_key=fred_api_key)
+        self.fred = FredProvider(start_date=start_date)
         self.sidra = SidraProvider(start_date=start_date)
         self.anbima = AnbimaProvider(start_date=start_date)
         self.cvm = CVMProvider(start_date=start_date)
