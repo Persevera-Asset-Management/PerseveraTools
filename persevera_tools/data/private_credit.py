@@ -301,6 +301,7 @@ def calculate_spread(index_code: str,
     # volume_df = pd.DataFrame({col: volume_map[col] for col in series.columns}, index=series.index)
     # volume_df = (volume_df * (series > 0)).replace(0., np.nan)
 
+    series = series.replace(0., np.nan)
     volume_df = series.where(series.isna(), 1) * volume_map
     weight_df = volume_df.div(volume_df.sum(axis=1), axis=0)
 
