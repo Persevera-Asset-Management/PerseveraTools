@@ -394,11 +394,22 @@ class ComdinheiroProvider(DataProvider):
             if not all([portfolios, start_date, end_date]):
                 raise ValueError("`portfolios`, `start_date`, and `end_date` must be provided for 'portfolio_nav'")
             
+            variable_names = {
+                "Data": "date",
+                "Carteira": "portfolio",
+                "Cota": "nav",
+                "PL": "total_equity",
+            }
             df = self._fetch_historical_nav(start_date, end_date, portfolios)
 
             if df.empty:
                 return pd.DataFrame()
             
+            df.rename(columns=variable_names, inplace=True)
+            df['date'] = pd.to_datetime(df['date'], format='%d/%m/%Y')
+            df['nav'] = pd.to_numeric(df['nav'], errors='coerce')
+            df['total_equity'] = pd.to_numeric(df['total_equity'], errors='coerce')
+
             return df
 
         else:
