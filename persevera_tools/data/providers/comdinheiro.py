@@ -107,6 +107,48 @@ class ComdinheiroProvider(DataProvider):
         except ValueError:
             raise DataRetrievalError("Failed to decode JSON from response.")
 
+    def _fetch_historical_nav(self, start_date: str, end_date: str, portfolios: list[str]) -> pd.DataFrame:
+        """
+        Fetches historical portfolio NAV from the Comdinheiro API.
+        """
+        start_date_str = datetime.strptime(start_date, '%Y-%m-%d').strftime('%d%m%Y')
+        end_date_str = datetime.strptime(end_date, '%Y-%m-%d').strftime('%d%m%Y')
+        report_url_params = {
+            'data_analise': end_date_str,
+            'data_ini': start_date_str,
+            'nome_portfolio': '+'.join(portfolios),
+            'portfolio_editavel': '',
+            'cotizacao': '0',
+            'exibir': '1',
+            'colunas_adicionais': '',
+        }
+        report_url = "RelatorioGerencialCarteiras009.php?" + urlencode(report_url_params)
+
+        payload_params = {
+            "username": self.username,
+            "password": self.password,
+            "URL": report_url,
+            "format": "json3",
+        }
+        payload = urlencode(payload_params)
+
+        try:
+            response = requests.post(self.API_URL, data=payload, headers=self.HEADERS)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise DataRetrievalError(f"API request failed: {e}")
+
+        try:
+            data = response.json()
+            if 'tables' in data and 'tab0' in data['tables']:
+                df = pd.DataFrame(data['tables']['tab0']).set_index('lin0').T.reset_index(drop=True)
+                return df
+            else:
+                self.logger.warning("Received unexpected data structure from API: %s", data)
+                return pd.DataFrame()
+        except ValueError:
+            raise DataRetrievalError("Failed to decode JSON from response.")
+
     def _fetch_statement(self, portfolio: str, date_inception: str, date_report: str) -> dict[str, pd.DataFrame]:
         """
         Fetches portfolio statement from the Comdinheiro API.
@@ -254,6 +296,11 @@ class ComdinheiroProvider(DataProvider):
         - start_date (str): The start date in 'YYYY-MM-DD' format.
         - end_date (str): The end date in 'YYYY-MM-DD' format.
 
+        For 'portfolio_nav', kwargs must contain:
+        - portfolios (list[str]): A list of portfolio names.
+        - start_date (str): The start date in 'YYYY-MM-DD' format.
+        - end_date (str): The end date in 'YYYY-MM-DD' format.
+
         Args:
             category (str): The category of data to retrieve. Defaults to 'portfolio_positions'.
             **kwargs: Additional arguments.
@@ -336,6 +383,21 @@ class ComdinheiroProvider(DataProvider):
 
             if 'saldo_bruto' in df.columns:
                 df['saldo_bruto'] = pd.to_numeric(df['saldo_bruto'], errors='coerce')
+            
+            return df
+
+        elif data_type == 'portfolio_nav':
+            portfolios = kwargs.get('portfolios')
+            start_date = kwargs.get('start_date')
+            end_date = kwargs.get('end_date')
+
+            if not all([portfolios, start_date, end_date]):
+                raise ValueError("`portfolios`, `start_date`, and `end_date` must be provided for 'portfolio_nav'")
+            
+            df = self._fetch_historical_nav(start_date, end_date, portfolios)
+
+            if df.empty:
+                return pd.DataFrame()
             
             return df
 
