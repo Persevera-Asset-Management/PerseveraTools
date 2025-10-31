@@ -68,7 +68,7 @@ class FinancialDataService:
         additional_fields: Optional[str] = None,
         exchanges: Optional[List[str]] = None,
         best_fperiod_override: Optional[str] = None,
-        use_fund_currency: bool = False,
+        use_fund_currency: Optional[str] = None,
         index_list: Optional[List[str]] = None,
         custom_tickers: Optional[Dict[str, str]] = None,
         custom_fields: Optional[Dict[str, str]] = None,
