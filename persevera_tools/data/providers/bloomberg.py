@@ -187,7 +187,7 @@ class BloombergProvider(DataProvider):
     ) -> pd.DataFrame:
         """Get company-specific data from Bloomberg."""
         if exchanges is None:
-            exchanges = ['BZ', 'US', 'CN']
+            exchanges = ['BZ', 'US']
             
         # Use custom fields if provided, otherwise use the mapping from the category
         if custom_fields:
