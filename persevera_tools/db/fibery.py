@@ -84,7 +84,13 @@ def _get_db_schema() -> Optional[Dict[str, Any]]:
             field_type = field.get("fibery/type")
             
             is_relation = "fibery/relation" in field_meta
-            is_enum = field_type and "enum" in field_type.lower()
+            # Consider Fibery workflow state fields as enums as well
+            field_type_str = (field_type or "")
+            is_workflow_state = "workflow/state" in field_type_str.lower()
+            is_type_component = bool(field_meta.get("fibery/type-component?", False))
+            is_enum = bool(field_type) and (
+                "enum" in field_type_str.lower() or is_workflow_state or is_type_component
+            )
             
             fields[field_name] = {
                 'is_relation': is_relation,
@@ -121,7 +127,7 @@ def _build_field_selection(fields_dict: Dict[str, Dict], table_name: str) -> Dic
     for field_name, field_info in fields_dict.items():
         # Create a clean alias (remove space prefix)
         alias = field_name.split('/')[-1]
-        field_types_to_exclude = [
+        primitive_types = [
             'uuid',
             'text',
             'fibery/text',
@@ -130,6 +136,8 @@ def _build_field_selection(fields_dict: Dict[str, Dict], table_name: str) -> Dic
             'fibery/date',
             'fibery/bool',
             'fibery/int',
+        ]
+        unsupported_types = [
             'Collaboration~Documents/Document'
         ]
         
@@ -145,16 +153,24 @@ def _build_field_selection(fields_dict: Dict[str, Dict], table_name: str) -> Dic
                 space_name = field_info.get('type')
                 # selection[alias] = [field_name, f'{space_name}/Name']
 
-                if field_info.get('meta', {}).get('fibery/type-component?', {}):
+                # Workflow state fields behave like enums
+                if isinstance(related_table_name, str) and 'workflow/state' in related_table_name.lower():
+                    selection[alias] = [field_name, 'enum/name']
+                elif field_info.get('meta', {}).get('fibery/type-component?', {}):
                     selection[alias] = [field_name, 'enum/name']
                 else:
                     selection[alias] = [field_name, f'{related_table_name.split("/")[0]}/Name']
 
-        elif field_info['type'] not in field_types_to_exclude:
-            selection[alias] = [field_name, f'{field_info['type'].split("/")[0]}/Name']
         else:
-            # Primitive field
-            selection[alias] = [field_name]
+            field_type_value = field_info.get('type')
+            # Skip unsupported heavy/non-primitive types (e.g. Documents)
+            if field_type_value in unsupported_types:
+                continue
+            # Directly fetch primitive types
+            if field_type_value in primitive_types or not field_type_value:
+                selection[alias] = [field_name]
+            else:
+                selection[alias] = [field_name, f'{field_type_value.split("/")[0]}/Name']
     
     return selection
 
