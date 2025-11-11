@@ -127,6 +127,13 @@ def _build_field_selection(fields_dict: Dict[str, Dict], table_name: str) -> Dic
     for field_name, field_info in fields_dict.items():
         # Create a clean alias (remove space prefix)
         alias = field_name.split('/')[-1]
+        field_type_str = (field_info.get('type') or '')
+
+        # Treat On-Off component types as enums, regardless of relation detection
+        if 'on-off' in field_type_str.lower():
+            selection[alias] = [field_name, 'enum/name']
+            continue
+
         primitive_types = [
             'uuid',
             'text',
@@ -155,6 +162,9 @@ def _build_field_selection(fields_dict: Dict[str, Dict], table_name: str) -> Dic
 
                 # Workflow state fields behave like enums
                 if isinstance(related_table_name, str) and 'workflow/state' in related_table_name.lower():
+                    selection[alias] = [field_name, 'enum/name']
+                # "On-Off" component relations also behave like enums
+                elif isinstance(related_table_name, str) and 'on-off' in related_table_name.lower():
                     selection[alias] = [field_name, 'enum/name']
                 elif field_info.get('meta', {}).get('fibery/type-component?', {}):
                     selection[alias] = [field_name, 'enum/name']
