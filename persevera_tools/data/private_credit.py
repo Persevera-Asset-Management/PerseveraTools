@@ -101,7 +101,8 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
                category: Optional[str] = None,
                start_date: Optional[Union[str, datetime, pd.Timestamp]] = None, 
                end_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
-               field: Union[str, List[str]] = 'yield_to_maturity') -> Union[pd.DataFrame, pd.Series]:
+               field: Union[str, List[str]] = 'yield_to_maturity',
+               source: str = 'anbima') -> Union[pd.DataFrame, pd.Series]:
     """Get time series data for one or more indicators from the database.
     
     Args:
@@ -109,7 +110,7 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
         start_date: Optional start date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp.
         end_date: Optional end date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp.
         field: Field or list of fields to retrieve (default: 'close').
-        
+        source: Source of the data (default: 'anbima').
     Returns:
         pd.Series or pd.DataFrame: 
         - A Series if a single code and a single field are requested.
@@ -200,6 +201,7 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
         SELECT {cols_str}
         FROM {table_name} 
         WHERE field IN ('{fields_str}')
+        AND source = '{source}'
     """
 
     if codes:
