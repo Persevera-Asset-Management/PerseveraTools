@@ -40,9 +40,12 @@ class B3Provider(DataProvider):
             "Investidores Individuais": "individual_investors",
             "Outros": "others",
         }
-        self.api_map = {"investors_participation": "SharesInvesVolum"}
+        self.api_map = {
+            "b3_investor_flow": "SharesInvesVolum",
+            "b3_bdi": "ConsolidatedRecords",
+        }
 
-    def _fetch_day(self, dt: datetime, category: str) -> pd.DataFrame:
+    def _fetch_flow_day(self, dt: datetime, category: str) -> pd.DataFrame:
         """Fetch data for a single day from the B3 API."""
         dt_str = format(dt, "%Y-%m-%d")
         api_path = self.api_map.get(category)
@@ -100,14 +103,127 @@ class B3Provider(DataProvider):
             logger.error(f"Failed to fetch data for {dt_str}: {e}")
             return pd.DataFrame()
 
-    def _fetch_data_in_range(
+    def _fetch_bdi_day(self, dt: datetime) -> pd.DataFrame:
+        """Fetch ConsolidatedRecords for a single day from the B3 API."""
+        dt_str = format(dt, "%Y-%m-%d")
+        url = f"https://arquivos.b3.com.br/bdi/table/ConsolidatedRecords/{dt_str}/{dt_str}/1/1000"
+        try:
+            r = requests.post(url, json={}, headers=self.headers, timeout=30)
+            r.raise_for_status()
+            j = r.json()
+
+            num_pages = j["table"]['pageCount']
+
+            all_values = []
+            payload_for_meta = j
+            for page in range(1, num_pages + 1):
+                url = f"https://arquivos.b3.com.br/bdi/table/ConsolidatedRecords/{dt_str}/{dt_str}/{page}/1000"
+                r = requests.post(url, json={}, headers=self.headers, timeout=30)
+                r.raise_for_status()
+                page_j = r.json()
+                if page_j:
+                    payload_for_meta = page_j
+                if page_j.get("table") and page_j["table"].get("values"):
+                    all_values.extend(page_j["table"]["values"])
+
+            if not all_values:
+                return pd.DataFrame()
+
+            logger.info(f"Successfully fetched B3 ConsolidatedRecords data for {dt_str}")
+
+            # Try to extract date from payload texts; fallback to requested date
+            try:
+                texts = payload_for_meta["table"].get("texts", [])
+                date_of_data = None
+                for t in texts:
+                    text_pt = (t or {}).get("textPt") or ""
+                    if isinstance(text_pt, str) and len(text_pt) >= 10:
+                        maybe_date = text_pt[-10:]
+                        try:
+                            date_of_data = pd.to_datetime(maybe_date, format="%d/%m/%Y")
+                            break
+                        except Exception:
+                            continue
+                if date_of_data is None:
+                    date_of_data = pd.to_datetime(dt_str)
+            except Exception:
+                date_of_data = pd.to_datetime(dt_str)
+
+            values = all_values
+
+            # Attempt to discover column names from headers/columns metadata
+            headers_candidates = []
+            for key in ("headers", "columns"):
+                if key in payload_for_meta["table"] and isinstance(payload_for_meta["table"][key], list):
+                    headers_candidates = payload_for_meta["table"][key]
+                    break
+
+            headers_en = None
+            if headers_candidates:
+                extracted = []
+                for h in headers_candidates:
+                    if isinstance(h, dict):
+                        # Prefer English if available; fallback to generic text/name
+                        name = h.get("textEn") or h.get("textPt") or h.get("name") or h.get("text")
+                        if name is None:
+                            name = ""
+                        extracted.append(str(name))
+                    else:
+                        extracted.append(str(h))
+                # Validate length match
+                if len(extracted) == len(values[0]):
+                    headers_en = extracted
+
+            temp = pd.DataFrame(values)
+            if headers_en:
+                temp.columns = headers_en
+            else:
+                temp.columns = [f"col_{i}" for i in range(temp.shape[1])]
+
+            # Identify code/ticker column
+            cols_map = {
+                "RptDt": "date",
+                "TckrSymb": "ticker",
+                "InstrumentCode": "instrument_code",
+                "ISIN": "isin",
+                "ReferencePrice": "price_close",
+            }
+            temp_filtered = temp[list(cols_map.keys())].rename(columns=cols_map)
+            temp_filtered["date"] = pd.to_datetime(temp_filtered["date"], errors="coerce")
+            # Ensure numeric
+            temp_filtered["price_close"] = pd.to_numeric(temp_filtered["price_close"], errors="coerce")
+            # Build standardized output
+            result = temp_filtered[["date", "ticker", "price_close"]].copy()
+            result.rename(columns={"ticker": "code", "price_close": "value"}, inplace=True)
+            # result["code"] = "br_b3_bdi_" + result["code"].astype(str).str.upper().str.strip()
+            result["field"] = "price_close"
+            result = result[["date", "code", "value", "field"]]
+            # Drop rows without date or value
+            result.dropna(subset=["date", "value"], inplace=True)
+            result["source"] = "b3"
+            return result
+
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 500:
+                logger.info(f"No ConsolidatedRecords data for {dt_str} (server returned 500).")
+            else:
+                logger.warning(f"HTTP error for ConsolidatedRecords {dt_str}: {e}")
+            return pd.DataFrame()
+        except json.JSONDecodeError as e:
+            logger.error(f"Failed to decode JSON for ConsolidatedRecords {dt_str}: {e}")
+            return pd.DataFrame()
+        except Exception as e:
+            logger.error(f"Failed to fetch ConsolidatedRecords for {dt_str}: {e}")
+            return pd.DataFrame()
+
+    def _fetch_flow_data_in_range(
         self, category: str, date_range: pd.DatetimeIndex
     ) -> pd.DataFrame:
         """Fetch data concurrently over a date range."""
         all_data = []
         with ThreadPoolExecutor(max_workers=10) as executor:
             futures = [
-                executor.submit(self._fetch_day, dt, category) for dt in date_range
+                executor.submit(self._fetch_flow_day, dt, category) for dt in date_range
             ]
             for future in as_completed(futures):
                 result = future.result()
@@ -120,6 +236,19 @@ class B3Provider(DataProvider):
             )
 
         return pd.concat(all_data, ignore_index=True)
+
+    def _fetch_bdi_in_range(self, date_range: pd.DatetimeIndex) -> pd.DataFrame:
+        """Fetch consolidated records concurrently over a date range."""
+        all_data = []
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            futures = [executor.submit(self._fetch_bdi_day, dt) for dt in date_range]
+            for future in as_completed(futures):
+                result = future.result()
+                if not result.empty:
+                    all_data.append(result)
+        if not all_data:
+            raise DataRetrievalError("No ConsolidatedRecords data retrieved from B3")
+        return pd.concat(all_data, ignore_index=True).drop_duplicates()
 
     def _calculate_investor_flow(self, df: pd.DataFrame) -> pd.DataFrame:
         """Calculate daily and net changes for investor flows."""
@@ -155,25 +284,43 @@ class B3Provider(DataProvider):
 
     def get_data(self, category: str, **kwargs) -> pd.DataFrame:
         """
-        Retrieve data from B3. The category should be 'investors_participation'.
+        Retrieve data from B3. The category should be 'b3_investor_flow' or 'b3_bdi'.
         """
         self._log_processing(f"B3 - {category}")
 
-        if category == "b3":
-            category = "investors_participation"
-        
-        periods = kwargs.get("periods", 30)
-        date_range = pd.bdate_range(end=datetime.now(), periods=periods)
+        # Build date range from kwargs if provided; otherwise use default periods
+        default_periods = 30 if category == "b3_bdi" else 30
+        if "date" in kwargs and kwargs["date"]:
+            single_date = pd.to_datetime(kwargs["date"])
+            date_range = pd.DatetimeIndex([single_date])
+        elif "start" in kwargs or "end" in kwargs:
+            start = pd.to_datetime(kwargs.get("start")) if kwargs.get("start") else None
+            end = pd.to_datetime(kwargs.get("end")) if kwargs.get("end") else None
+            if start is None and end is not None:
+                # If only end is provided, default a single-day range
+                date_range = pd.DatetimeIndex([end])
+            else:
+                if end is None:
+                    end = datetime.now() - timedelta(days=1)
+                if start is None:
+                    start = end
+                date_range = pd.bdate_range(start=start, end=end)
+        else:
+            periods = kwargs.get("periods", default_periods)
+            date_range = pd.bdate_range(end=datetime.now() - timedelta(days=1), periods=periods)
 
-        raw_df = self._fetch_data_in_range(category, date_range)
-        
-        processed_df = self._calculate_investor_flow(raw_df)
-
-        processed_df["code"] = (
-            "br_b3_" + processed_df["code"] + "_" + processed_df["field_type"]
-        )
-        processed_df["field"] = "close"
-        
-        final_df = processed_df[["date", "code", "value", "field"]]
-        
-        return self._validate_output(final_df)
+        if category == "b3_bdi":
+            df = self._fetch_bdi_in_range(date_range)
+            # return self._validate_output(df)
+            return df
+        elif category == "b3_investor_flow":
+            raw_df = self._fetch_flow_data_in_range(category, date_range)
+            processed_df = self._calculate_investor_flow(raw_df)
+            processed_df["code"] = (
+                "br_b3_" + processed_df["code"] + "_" + processed_df["field_type"]
+            )
+            processed_df["field"] = "close"
+            final_df = processed_df[["date", "code", "value", "field"]]
+            return self._validate_output(final_df)
+        else:
+            raise ValueError(f"Category '{category}' not supported by B3Provider.")

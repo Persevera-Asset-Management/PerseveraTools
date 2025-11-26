@@ -30,7 +30,7 @@ class AnbimaProvider(DataProvider):
         """
         self._log_processing(category)
         
-        if category == 'anbima':
+        if category == 'anbima_indices':
             return self._read_anbima_files()
         elif category == 'anbima_debentures':
             return self.get_debentures_data(category, **kwargs)
@@ -117,6 +117,7 @@ class AnbimaProvider(DataProvider):
             var_name='field'
         )
         df = df.replace({np.nan: None})
+        df['source'] = 'anbima'
         return df
 
     def _parse_debentures_file(self, content: str, date: datetime) -> pd.DataFrame:
@@ -270,6 +271,7 @@ class AnbimaProvider(DataProvider):
         )
         df = df.dropna(subset=['value'])
         df = df.replace({np.nan: None})
+        df['source'] = 'anbima'
         return df
 
     def _parse_cri_cra_csv(self, content: str) -> pd.DataFrame:

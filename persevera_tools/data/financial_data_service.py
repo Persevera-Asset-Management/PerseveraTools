@@ -478,7 +478,7 @@ class FinancialDataService:
                         to_sql(
                             data=df,
                             table_name=table_name,
-                            primary_keys=['code', 'date', 'field'],
+                            primary_keys=['code', 'date', 'field', 'source'],
                             update=True,
                             batch_size=5000
                         )
@@ -501,10 +501,11 @@ class FinancialDataService:
 
     def get_data(
         self,
-        source: Literal['sgs', 'fred', 'sidra', 'anbima', 'simplify', 'invesco', 'bcb_focus', 'kraneshares', 'mdic', 'b3'],
+        source: Literal['sgs', 'fred', 'sidra', 'debentures_com', 'anbima_indices', 'anbima_debentures', 'anbima_titulos_publicos', 'anbima_cri_cra', 'simplify', 'invesco', 'bcb_focus', 'kraneshares', 'mdic', 'b3_investor_flow', 'b3_bdi'],
         save_to_db: bool = True,
         retry_attempts: int = 3,
         table_name: Optional[str] = None,
+        primary_keys: Optional[List[str]] = None,
         **kwargs
     ) -> pd.DataFrame:
         """
@@ -515,6 +516,7 @@ class FinancialDataService:
             save_to_db: Whether to save the data to the database
             retry_attempts: Number of retry attempts
             table_name: Optional custom table name for database storage
+            primary_keys: Optional list of primary keys for the database table
             **kwargs: Additional arguments passed to the specific provider
             
         Returns:
@@ -527,19 +529,25 @@ class FinancialDataService:
             'sgs': (self.sgs, 'indicadores'),
             'fred': (self.fred, 'indicadores'),
             'sidra': (self.sidra, 'indicadores'),
-            'anbima': (self.anbima, 'indicadores'),
+            'debentures_com': (self.debentures_com, 'credito_privado_emissoes'),
+            'anbima_indices': (self.anbima, 'indicadores'),
+            'anbima_debentures': (self.anbima, 'credito_privado_historico'),
+            'anbima_titulos_publicos': (self.anbima, 'anbima_titulos_publicos_historico'),
+            'anbima_cri_cra': (self.anbima, 'credito_privado_historico'),
             'bcb_focus': (self.bcb_focus, 'indicadores'),
             'simplify': (self.simplify, 'indicadores'),
             'invesco': (self.invesco, 'indicadores'),
             'kraneshares': (self.kraneshares, 'indicadores'),
             'mdic': (self.mdic, 'indicadores'),
-            'b3': (self.b3, 'indicadores'),
+            'b3_investor_flow': (self.b3, 'indicadores'),
+            'b3_bdi': (self.b3, 'credito_privado_historico'),
         }
         
         if source not in providers:
             raise ValueError(f"Unknown source: {source}")
             
         provider, default_table = providers[source]
+        default_primary_keys = ['code', 'date', 'field']
         
         attempt = 0
         last_error = None
@@ -561,7 +569,7 @@ class FinancialDataService:
                         to_sql(
                             data=df,
                             table_name=db_table,
-                            primary_keys=['code', 'date', 'field'],
+                            primary_keys=primary_keys or default_primary_keys,
                             update=True,
                             batch_size=5000
                         )
