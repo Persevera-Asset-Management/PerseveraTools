@@ -23,7 +23,7 @@ class MDICProvider(DataProvider):
         self._log_processing(category)
 
         try:
-            response = requests.get(self.url, headers=self.headers)
+            response = requests.get(self.url, headers=self.headers, verify=False)
             response.raise_for_status()
             self.logger.info("File downloaded successfully from MDIC.")
         except requests.exceptions.HTTPError as e:
