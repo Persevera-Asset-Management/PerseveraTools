@@ -237,10 +237,13 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
             raise ValueError(f"No data found for any codes with field(s) {fields}")
     
     # Pivot the data to get the desired format
+    group_cols = ['code', 'field']
+    if 'source' in df.columns:
+        group_cols.append('source')
     df = df.pivot_table(
-            index='date',
-            columns=['code', 'field', 'source'],
-            values='value'
+        index='date',
+        columns=group_cols,
+        values='value'
     )
     # if source == 'all':
     #     df = df.pivot_table(
@@ -329,17 +332,24 @@ def calculate_spread(index_code: str,
     
     if index_code == 'DI':
         codes = emissions[emissions['percentual_multiplicador_rentabilidade'] == 100]['code'].tolist()
-        series = get_series(code=codes, category='credito_privado_di', start_date=start_date, end_date=end_date, field=field)
+        series = get_series(code=codes, source='anbima', category='credito_privado_di', start_date=start_date, end_date=end_date, field=field)
+        # Adapt to MultiIndex columns (code, field, source) from get_series
+        if isinstance(series.columns, pd.MultiIndex):
+            selected_field = field[0] if isinstance(field, list) and len(field) > 0 else (field if isinstance(field, str) else 'yield_to_maturity')
+            if 'field' in series.columns.names:
+                series = series.xs(selected_field, axis=1, level='field')
+            if 'source' in series.columns.names:
+                series = series.xs('anbima', axis=1, level='source')
         series = series.interpolate(limit=5)
     elif index_code == 'IPCA':
         codes = emissions['code'].tolist()
-        series_ipca = get_series(code=codes, category='credito_privado_ipca', start_date=start_date, end_date=end_date, field=field)
+        series_ipca = get_series(code=codes, source='anbima', category='credito_privado_ipca', start_date=start_date, end_date=end_date, field=field)
         series_ipca = series_ipca.replace(0., np.nan)
         series_ipca_interpolated = series_ipca.pivot_table(index='date', columns='code', values='value').interpolate(limit=5).stack().reset_index()
         series_ipca_interpolated = pd.merge(series_ipca_interpolated, series_ipca[['code', 'reference']].drop_duplicates(), on=['code'], how='left').dropna().drop_duplicates()
         series_ipca_interpolated.columns = ['date', 'code', 'value', 'reference']
 
-        series_titulos_publicos = get_series(code='NTN-B', category='titulos_publicos', start_date=start_date, end_date=end_date, field=field)
+        series_titulos_publicos = get_series(code='NTN-B', source='anbima', category='titulos_publicos', start_date=start_date, end_date=end_date, field=field)
         series_merged = pd.merge(series_ipca_interpolated, series_titulos_publicos, left_on=['date', 'reference'], right_on=['date', 'maturity'], how='inner')
         series_merged = series_merged.drop(columns=['code_y', 'maturity', 'reference'])
         series_merged.columns = ['date', 'code', 'yield_to_maturity', 'ytm_ntnb']
