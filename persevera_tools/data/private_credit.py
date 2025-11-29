@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Literal
 import pandas as pd
 import numpy as np
 from itertools import product
@@ -98,19 +98,20 @@ def get_emissions(index_code: Optional[Union[str, List[str]]] = None,
     return df
 
 def get_series(code: Optional[Union[str, List[str]]] = None,
-               category: Optional[str] = None,
                start_date: Optional[Union[str, datetime, pd.Timestamp]] = None, 
                end_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
                field: Union[str, List[str]] = 'yield_to_maturity',
-               source: str = 'anbima') -> Union[pd.DataFrame, pd.Series]:
-    """Get time series data for one or more indicators from the database.
+               source: Literal['anbima', 'b3', 'all'] = 'all',
+               category: Optional[Literal['credito_privado_di', 'credito_privado_ipca', 'titulos_publicos']] = None) -> Union[pd.DataFrame, pd.Series]:
+    """
+    Get time series data for one or more private credit indicators from the database.
     
     Args:
         code: Single indicator code, list of codes, or None to retrieve all codes.
         start_date: Optional start date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp.
         end_date: Optional end date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp.
-        field: Field or list of fields to retrieve (default: 'close').
-        source: Source of the data (default: 'anbima').
+        field: Field or list of fields to retrieve (default: 'yield_to_maturity').
+        source: Source of the data (default: 'anbima'). Can be 'anbima', 'b3', or 'all'.
     Returns:
         pd.Series or pd.DataFrame: 
         - A Series if a single code and a single field are requested.
@@ -192,8 +193,16 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
         table_name = 'anbima_titulos_publicos_historico'
         cols = ['date', 'code', 'maturity', 'value']
         date_cols = ['date', 'maturity']
+    elif category is None:
+        table_name = 'credito_privado_historico'
+        cols = ['date', 'code', 'field', 'value', 'source']
+        date_cols = ['date']
     else:
         raise ValueError("Invalid category")
+
+    # If user requested all sources, include source column in the selection
+    if source == 'all' and 'source' not in cols:
+        cols = cols + ['source']
 
     fields_str = "','".join(fields)
     cols_str = ",".join(cols)
@@ -201,8 +210,10 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
         SELECT {cols_str}
         FROM {table_name} 
         WHERE field IN ('{fields_str}')
-        AND source = '{source}'
     """
+
+    if source != 'all':
+        query += f" AND source = '{source}'"
 
     if codes:
         codes_str = "','".join(codes)
@@ -227,28 +238,69 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
     
     # Pivot the data to get the desired format
     df = df.pivot_table(
-        index='date',
-        columns=['code', 'field'],
-        values='value'
+            index='date',
+            columns=['code', 'field', 'source'],
+            values='value'
     )
+    # if source == 'all':
+    #     df = df.pivot_table(
+    #         index='date',
+    #         columns=['code', 'field', 'source'],
+    #         values='value'
+    #     )
+    # else:
+    #     df = df.pivot_table(
+    #         index='date',
+    #         columns=['code', 'field'],
+    #         values='value'
+    #     )
     
     # Simplify output and reorder columns
-    if code is not None:
-        if len(codes) == 1 and len(fields) == 1:
-            series = df.iloc[:, 0]
-            series.name = fields[0]
-            return series
-        elif len(codes) == 1:
-            df = df.droplevel('code', axis=1)
-            df = df.reindex(columns=fields)
+    if source == 'all':
+        if code is not None:
+            if len(codes) == 1 and len(fields) == 1:
+                # Return a DataFrame with sources as columns
+                df = df.droplevel(['code', 'field'], axis=1)
+                return df
+            elif len(codes) == 1:
+                # Columns: (field, source)
+                df = df.droplevel('code', axis=1)
+                try:
+                    sources = list(df.columns.get_level_values('source').unique())
+                    new_columns = pd.MultiIndex.from_product([fields, sources], names=['field', 'source'])
+                    df = df.reindex(columns=new_columns)
+                except Exception:
+                    pass
+            elif len(fields) == 1:
+                # Columns: (code, source)
+                df = df.droplevel('field', axis=1)
+                try:
+                    sources = list(df.columns.get_level_values('source').unique())
+                    new_columns = pd.MultiIndex.from_product([codes, sources], names=['code', 'source'])
+                    df = df.reindex(columns=new_columns)
+                except Exception:
+                    pass
+        else:
+            if len(fields) == 1:
+                # Columns: (code, source)
+                df = df.droplevel('field', axis=1)
+    else:
+        if code is not None:
+            if len(codes) == 1 and len(fields) == 1:
+                series = df.iloc[:, 0]
+                series.name = fields[0]
+                return series
+            elif len(codes) == 1:
+                df = df.droplevel('code', axis=1)
+                df = df.reindex(columns=fields)
+            elif len(fields) == 1:
+                df = df.droplevel('field', axis=1)
+                df = df.reindex(columns=codes)
+            else:
+                new_columns = list(product(codes, fields))
+                df = df.reindex(columns=new_columns)
         elif len(fields) == 1:
             df = df.droplevel('field', axis=1)
-            df = df.reindex(columns=codes)
-        else:
-            new_columns = list(product(codes, fields))
-            df = df.reindex(columns=new_columns)
-    elif len(fields) == 1:
-        df = df.droplevel('field', axis=1)
     
     # Drop columns with all NaN values
     df = df.dropna(how='all', axis=1)
