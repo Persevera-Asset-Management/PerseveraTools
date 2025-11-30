@@ -200,8 +200,9 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
     else:
         raise ValueError("Invalid category")
 
-    # If user requested all sources, include source column in the selection
-    if source == 'all' and 'source' not in cols:
+    # If user requested all sources, include source column only when table has it
+    table_has_source = table_name == 'credito_privado_historico'
+    if source == 'all' and table_has_source and 'source' not in cols:
         cols = cols + ['source']
 
     fields_str = "','".join(fields)
@@ -212,7 +213,7 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
         WHERE field IN ('{fields_str}')
     """
 
-    if source != 'all':
+    if source != 'all' and table_has_source:
         query += f" AND source = '{source}'"
 
     if codes:
@@ -349,7 +350,18 @@ def calculate_spread(index_code: str,
         series_ipca_interpolated = pd.merge(series_ipca_interpolated, series_ipca[['code', 'reference']].drop_duplicates(), on=['code'], how='left').dropna().drop_duplicates()
         series_ipca_interpolated.columns = ['date', 'code', 'value', 'reference']
 
-        series_titulos_publicos = get_series(code='NTN-B', source='anbima', category='titulos_publicos', start_date=start_date, end_date=end_date, field=field)
+        series_titulos_publicos = get_series(code='NTN-B', category='titulos_publicos', start_date=start_date, end_date=end_date, field=field)
+        # Ensure merge keys exist as columns
+        if isinstance(series_titulos_publicos.index, pd.MultiIndex):
+            series_titulos_publicos = series_titulos_publicos.reset_index()
+        elif getattr(series_titulos_publicos.index, "name", None) in ['date', 'maturity']:
+            series_titulos_publicos = series_titulos_publicos.reset_index()
+        # Prefer a single source to avoid duplicates on merge
+        if 'source' in series_titulos_publicos.columns:
+            unique_sources = series_titulos_publicos['source'].unique().tolist()
+            if 'anbima' in unique_sources:
+                series_titulos_publicos = series_titulos_publicos[series_titulos_publicos['source'] == 'anbima']
+            series_titulos_publicos = series_titulos_publicos.drop(columns=['source'])
         series_merged = pd.merge(series_ipca_interpolated, series_titulos_publicos, left_on=['date', 'reference'], right_on=['date', 'maturity'], how='inner')
         series_merged = series_merged.drop(columns=['code_y', 'maturity', 'reference'])
         series_merged.columns = ['date', 'code', 'yield_to_maturity', 'ytm_ntnb']
