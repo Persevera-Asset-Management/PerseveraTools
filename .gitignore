@@ -176,3 +176,6 @@ cython_debug/
 
 #Ignore cursor AI rules
 .cursor\rules\codacy.mdc
+
+persevera_tools/data/providers/ws_xp.py
+persevera_tools/data/providers/ws_ibkr.py

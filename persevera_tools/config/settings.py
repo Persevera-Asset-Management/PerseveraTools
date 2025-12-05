@@ -56,6 +56,21 @@ class Settings:
         if os.getenv('PERSEVERA_LOG_LEVEL'):
             self.LOG_CONFIG['default_level'] = os.getenv('PERSEVERA_LOG_LEVEL')
 
+        # Load XP Wealth Services (XPWS) configuration
+        self.XPWS_TENANT_ID = os.getenv('PERSEVERA_XPWS_TENANT_ID')
+        self.XPWS_CLIENT_ID = os.getenv('PERSEVERA_XPWS_CLIENT_ID')
+        self.XPWS_CLIENT_SECRET = os.getenv('PERSEVERA_XPWS_CLIENT_SECRET')
+        self.XPWS_SCOPE = os.getenv('PERSEVERA_XPWS_SCOPE')
+        self.XPWS_BASE_URL = os.getenv('PERSEVERA_XPWS_BASE_URL')
+
+        # Load IBKR Web API (Trading OAuth 1.0a) configuration
+        # See: PERSEVERA_IBKR_* environment variables
+        self.IBKR_BASE_URL = os.getenv('PERSEVERA_IBKR_BASE_URL')
+        self.IBKR_CONSUMER_KEY = os.getenv('PERSEVERA_IBKR_CONSUMER_KEY')
+        self.IBKR_CONSUMER_SECRET = os.getenv('PERSEVERA_IBKR_CONSUMER_SECRET')
+        self.IBKR_ACCESS_TOKEN = os.getenv('PERSEVERA_IBKR_ACCESS_TOKEN')
+        self.IBKR_ACCESS_TOKEN_SECRET = os.getenv('PERSEVERA_IBKR_ACCESS_TOKEN_SECRET')
+
     def get_gs_client_secret(self):
         return {
             "installed":{

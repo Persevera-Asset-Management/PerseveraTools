@@ -161,7 +161,7 @@ class ComdinheiroProvider(DataProvider):
 
         report_url_params = {
             'nome_portfolio': portfolio,
-            'layout': 'ExtratoPerseveraOnshore',
+            'layout': 'ExtratoPerseveraOnshore_v2',
             'data_ini': date_inception_str,
             'data_ini2': date_mtd_str,
             'data_ini3': date_ytd_str,
