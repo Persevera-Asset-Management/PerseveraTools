@@ -3,10 +3,10 @@ import pandas as pd
 import requests
 
 from .base import DataProvider, DataRetrievalError
-from persevera_tools.data.private_credit import get_emissions
-from persevera_tools.db.operations import read_sql
-from persevera_tools.db.fibery import read_fibery
-# from ...db.operations import read_sql
+# from persevera_tools.db.operations import read_sql
+# from persevera_tools.db.fibery import read_fibery
+from ...db.operations import read_sql
+from ...db.fibery import read_fibery
 
 class MaisRetornoProvider(DataProvider):
     """Provider for Mais Retorno data (e.g., debentures quotes and funds)."""
