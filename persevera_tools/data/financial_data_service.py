@@ -17,6 +17,7 @@ from .providers.investing_com import InvestingComProvider
 from .providers.debentures_com import DebenturesComProvider
 from .providers.mdic import MDICProvider
 from .providers.b3 import B3Provider
+from .providers.mais_retorno import MaisRetornoProvider
 from ..db.operations import to_sql
 
 logger = logging.getLogger(__name__)
@@ -59,6 +60,7 @@ class FinancialDataService:
         self.debentures_com = DebenturesComProvider()
         self.mdic = MDICProvider()
         self.b3 = B3Provider()
+        self.mais_retorno = MaisRetornoProvider()
         self.logger = logging.getLogger(self.__class__.__name__)
         
     def get_bloomberg_data(
@@ -273,7 +275,7 @@ class FinancialDataService:
 
     def get_data(
         self,
-        source: Literal['sgs', 'fred', 'sidra', 'debentures_com', 'anbima_indices', 'anbima_debentures', 'anbima_titulos_publicos', 'anbima_cri_cra', 'simplify', 'invesco', 'bcb_focus', 'kraneshares', 'mdic', 'b3_investor_flow', 'b3_bdi'],
+        source: Literal['sgs', 'fred', 'sidra', 'debentures_com', 'anbima_indices', 'anbima_debentures', 'anbima_titulos_publicos', 'anbima_cri_cra', 'simplify', 'invesco', 'bcb_focus', 'kraneshares', 'mdic', 'b3_investor_flow', 'b3_bdi', 'mais_retorno_debentures', 'mais_retorno_fundos'],
         save_to_db: bool = True,
         retry_attempts: int = 3,
         table_name: Optional[str] = None,
@@ -313,6 +315,8 @@ class FinancialDataService:
             'mdic': (self.mdic, 'indicadores'),
             'b3_investor_flow': (self.b3, 'indicadores'),
             'b3_bdi': (self.b3, 'credito_privado_historico'),
+            'mais_retorno_debentures': (self.mais_retorno, 'credito_privado_historico'),
+            'mais_retorno_fundos': (self.mais_retorno, 'fundos_cvm'),
         }
         
         if source not in providers:
