@@ -1,4 +1,5 @@
 from typing import Dict, Optional, Iterable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import requests
 
@@ -16,6 +17,16 @@ class MaisRetornoProvider(DataProvider):
 
     def __init__(self, start_date: str = '1980-01-01'):
         super().__init__(start_date)
+
+    def get_data(self, category: str, **kwargs) -> pd.DataFrame:
+        self._log_processing(category)
+        if category == 'mais_retorno_debentures':
+            df = self.get_debentures_data(category, **kwargs)
+        elif category == 'mais_retorno_fundos':
+            df = self.get_funds_data(category, **kwargs)
+        else:
+            raise ValueError(f"Invalid category: {category}")
+        return df
 
     def _normalize_raw_code(self, category: str, code: str) -> str:
         """
@@ -181,20 +192,37 @@ class MaisRetornoProvider(DataProvider):
             raise DataRetrievalError(f"No Mais Retorno codes available for category '{category}'")
 
         frames = []
-        for input_code in codes_iterable:
-            raw_code = self._normalize_raw_code('debentures', input_code)
-            temp = self._fetch_quotes_for_code(raw_code, adjusted=adjusted)
-            if temp.empty:
-                continue
-            # Resolve internal code preference: input_code -> raw_code -> fallback to input_code
-            internal_code = (
-                (codes_map or {}).get(input_code)
-                or (codes_map or {}).get(raw_code)
-                or input_code
-            )
-            field_name = "price_close_adj" if adjusted else "price_close"
-            temp = temp.assign(code=internal_code, field=field_name)
-            frames.append(temp[["date", "code", "field", "value"]])
+
+        # Use ThreadPoolExecutor to speed up retrieval across many debentures
+        with ThreadPoolExecutor(max_workers=10) as executor:
+            future_to_codes = {}
+            for input_code in codes_iterable:
+                raw_code = self._normalize_raw_code("debentures", input_code)
+                future = executor.submit(self._fetch_quotes_for_code, raw_code, adjusted)
+                future_to_codes[future] = (input_code, raw_code)
+
+            for future in as_completed(future_to_codes):
+                input_code, raw_code = future_to_codes[future]
+                try:
+                    temp = future.result()
+                except Exception as e:
+                    self.logger.warning(
+                        f"Failed to fetch Mais Retorno code '{raw_code}' in thread: {e}"
+                    )
+                    continue
+
+                if temp.empty:
+                    continue
+
+                # Resolve internal code preference: input_code -> raw_code -> fallback to input_code
+                internal_code = (
+                    (codes_map or {}).get(input_code)
+                    or (codes_map or {}).get(raw_code)
+                    or input_code
+                )
+                field_name = "price_close_adj" if adjusted else "price_close"
+                temp = temp.assign(code=internal_code, field=field_name)
+                frames.append(temp[["date", "code", "field", "value"]])
 
         if not frames:
             raise DataRetrievalError("No data retrieved from Mais Retorno")
@@ -219,8 +247,7 @@ class MaisRetornoProvider(DataProvider):
                    These will be normalized to Mais Retorno slugs like '50716952000184:fi'.
 
         Returns:
-            DataFrame with columns: ['date', 'code', 'field', 'value']
-            where 'field' is one of ['fund_nav', 'fund_total_equity', 'fund_holders'].
+            DataFrame
         """
         adjusted = kwargs.get("adjusted", True)
         link_old_historic = kwargs.get("link_old_historic", True)
@@ -267,14 +294,4 @@ class MaisRetornoProvider(DataProvider):
 
         df = pd.concat(frames, ignore_index=True)
         df = df.rename(columns={"code": "fund_cnpj"})
-        return df
-
-    def get_data(self, category: str, **kwargs) -> pd.DataFrame:
-        self._log_processing(category)
-        if category == 'mais_retorno_debentures':
-            df = self.get_debentures_data(category, **kwargs)
-        elif category == 'mais_retorno_fundos':
-            df = self.get_funds_data(category, **kwargs)
-        else:
-            raise ValueError(f"Invalid category: {category}")
         return df
