@@ -184,10 +184,34 @@ def _build_field_selection(fields_dict: Dict[str, Dict], table_name: str) -> Dic
     
     return selection
 
-def read_fibery(table_name: str, include_fibery_fields: bool = False) -> pd.DataFrame:
+def read_fibery(
+    table_name: str, 
+    include_fibery_fields: bool = False,
+    where_filter: Optional[List[Any]] = None,
+    params: Optional[Dict[str, Any]] = None
+) -> pd.DataFrame:
     """
     Reads all data from a Fibery table and returns it as a pandas DataFrame.
     Automatically handles relational fields and enums.
+    
+    Args:
+        table_name: The display name of the Fibery table to read.
+        include_fibery_fields: Whether to include Fibery system fields (created-by, rank, etc.).
+        where_filter: Optional filter condition using Fibery's q/where syntax.
+            Example: [">=", ["fibery/creation-date"], "$cutoffDate"]
+        params: Optional dictionary of parameter values for the where_filter.
+            Example: {"$cutoffDate": "2026-01-23T00:00:00Z"}
+    
+    Returns:
+        A pandas DataFrame with the table data.
+    
+    Example:
+        # Filter by creation date
+        df = read_fibery(
+            "Posição",
+            where_filter=[">=", ["fibery/creation-date"], "$cutoffDate"],
+            params={"$cutoffDate": "2026-01-23T00:00:00Z"}
+        )
     """
     db_schema = _get_db_schema()
     if not db_schema:
@@ -231,8 +255,17 @@ def read_fibery(table_name: str, include_fibery_fields: bool = False) -> pd.Data
             "q/select": field_selection,
             "q/limit": page_size
         }
+        
+        # Add where filter if provided
+        if where_filter is not None:
+            query["q/where"] = where_filter
+        
+        # Build the args with query and optional params
+        args = {"query": query}
+        if params is not None:
+            args["params"] = params
             
-        payload = [{"command": "fibery.entity/query", "args": {"query": query}}]
+        payload = [{"command": "fibery.entity/query", "args": args}]
 
         try:
             response = requests.post(api_url, headers=headers, json=payload)
