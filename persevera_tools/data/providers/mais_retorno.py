@@ -262,7 +262,7 @@ class MaisRetornoProvider(DataProvider):
             # If no explicit codes provided, use keys from codes_map
             # codes_iterable = list(codes_map.keys())
             ativos = read_fibery(table_name='Inv-Taxonomia/Ativos', include_fibery_fields=False)
-            ativos = ativos[ativos['Classificação Sub-Conjunto'] == 'FIDC']
+            ativos = ativos[ativos['Classificação Sub-Conjunto'] == 'Fundo de Crédito High Yield']
             codes_iterable = ativos['Name'].tolist()
 
         if not codes_iterable:
