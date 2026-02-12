@@ -63,9 +63,21 @@ class B3Provider(DataProvider):
             if not j["table"]["values"]:
                 return pd.DataFrame()
 
-            date_of_data = pd.to_datetime(
-                j["table"]["texts"][1].get("textPt")[-10:], format="%d/%m/%Y"
-            )
+            # Extract date from payload texts; fallback to requested date
+            date_of_data = None
+            texts = j["table"].get("texts") or []
+            for t in texts:
+                text_pt = (t or {}).get("textPt") or ""
+                if isinstance(text_pt, str) and len(text_pt) >= 10:
+                    try:
+                        date_of_data = pd.to_datetime(
+                            text_pt[-10:], format="%d/%m/%Y"
+                        )
+                        break
+                    except (ValueError, TypeError):
+                        continue
+            if date_of_data is None:
+                date_of_data = pd.to_datetime(dt_str)
             date_of_data_str = date_of_data.strftime("%Y-%m-%d")
 
             logger.info(f"Successfully fetched B3 data for {date_of_data_str}")
