@@ -172,6 +172,7 @@ cython_debug/
 
 # Ignore example files as they may contain sensitive data
 /examples/
+/tests/
 
 
 #Ignore cursor AI rules
