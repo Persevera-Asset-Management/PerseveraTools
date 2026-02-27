@@ -7,7 +7,7 @@ import os
 from xbbg import blp
 
 from .base import DataProvider, DataRetrievalError
-from ..lookups import get_codes, get_bloomberg_codes, get_securities_by_exchange
+from ..lookups import get_codes, get_securities_by_exchange
 from ...config import settings
 from ...db.operations import read_sql
 
@@ -140,11 +140,11 @@ class BloombergProvider(DataProvider):
             elif additional_fields in self.fields_mapping:
                 field_list = self.fields_mapping[additional_fields]
             else:
-                field_list = get_bloomberg_codes(sheet_name='index_signals', category=additional_fields)
-                
+                raise ValueError(f"Unknown additional fields: {additional_fields}")
+
             df = blp.bdh(
-                tickers=securities_list.keys(),
-                flds=field_list.keys(),
+                tickers=list(securities_list.keys()),
+                flds=list(field_list.keys()),
                 start_date=self.start_date,
                 BEST_FPERIOD_OVERRIDE=best_fperiod_override,
                 **kwargs
@@ -158,8 +158,8 @@ class BloombergProvider(DataProvider):
             field_mapping = {'PX_LAST': 'close'}
             
             df = blp.bdh(
-                tickers=securities_list.keys(),
-                flds=field_mapping.keys(),
+                tickers=list(securities_list.keys()),
+                flds=list(field_mapping.keys()),
                 start_date=self.start_date,
                 **kwargs
             )
@@ -257,8 +257,8 @@ class BloombergProvider(DataProvider):
             self.logger.info(f"Downloading members of {index_rel}...")
             try:
                 df = blp.bdh(
-                    tickers=securities_list.keys(),
-                    flds=field_list.keys(),
+                    tickers=list(securities_list.keys()),
+                    flds=list(field_list.keys()),
                     start_date=self.start_date,
                     REL_INDEX=index_rel,
                 )
@@ -289,8 +289,8 @@ class BloombergProvider(DataProvider):
     ) -> pd.DataFrame:
         """Get regular company data."""
         api_kwargs = {
-            'tickers': securities_list.keys(),
-            'flds': field_list.keys(),
+            'tickers': list(securities_list.keys()),
+            'flds': list(field_list.keys()),
             'start_date': self.start_date,
             **kwargs
         }

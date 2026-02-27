@@ -1,5 +1,4 @@
 from .lookups import (
-    get_bloomberg_codes,
     get_codes,
     get_securities_by_exchange
 )
@@ -11,7 +10,6 @@ from .financial_data_service import FinancialDataService
 from .funds import get_funds_data, get_persevera_peers
 
 __all__ = [
-    'get_bloomberg_codes',
     'get_equities_info',
     'get_securities_by_exchange',
     'get_codes',

@@ -694,4 +694,5 @@ result = build_spectrum(
     w_anchor_aggressive=np.array([0.10, 0.50, 0.40]),
 )
 
-get_profile_summary(result, profile=5)
+summary = get_profile_summary(result, profile=90)
+print(summary)
