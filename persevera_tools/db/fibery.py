@@ -1,3 +1,4 @@
+import time
 import requests
 import logging
 import pandas as pd
@@ -184,16 +185,137 @@ def _build_field_selection(fields_dict: Dict[str, Dict], table_name: str) -> Dic
     
     return selection
 
+def _execute_fibery_page(
+    api_url: str,
+    headers: Dict[str, str],
+    canonical_name: str,
+    field_selection: Dict[str, Any],
+    where_filter: Optional[List[Any]],
+    params: Optional[Dict[str, Any]],
+    offset: int,
+    page_size: int,
+    max_field_retries: int = 3,
+    max_timeout_retries: int = 3,
+) -> Tuple[Optional[List[Any]], Dict[str, Any]]:
+    """
+    Executes a single paginated Fibery query with retry logic for both field errors
+    and API timeouts.
+
+    On field errors, attempts to correct the field selection in up to max_field_retries
+    attempts (enum/name → Space/Name → remove field).
+
+    On timeout errors, retries with exponential backoff (2s, 4s, 8s, ...).
+
+    Returns:
+        A tuple of (entities, corrected_field_selection), where entities is None on
+        unrecoverable error.
+    """
+    field_retries = 0
+    timeout_retries = 0
+
+    while field_retries < max_field_retries:
+        query: Dict[str, Any] = {
+            "q/from": canonical_name,
+            "q/select": field_selection,
+            "q/limit": page_size,
+            "q/offset": offset,
+        }
+
+        if where_filter is not None:
+            query["q/where"] = where_filter
+
+        args: Dict[str, Any] = {"query": query}
+        if params is not None:
+            args["params"] = params
+
+        payload = [{"command": "fibery.entity/query", "args": args}]
+
+        try:
+            response = requests.post(api_url, headers=headers, json=payload)
+            response.raise_for_status()
+            data = response.json()
+
+            if not data or not data[0].get("success"):
+                error_info = data[0].get("result", {})
+                error_name = error_info.get("name", "")
+                error_message = error_info.get("message", "Unknown error")
+
+                # --- Timeout: retry with exponential backoff ---
+                if "timeout" in error_message.lower():
+                    if timeout_retries < max_timeout_retries:
+                        wait = 2 ** timeout_retries
+                        logger.warning(
+                            f"Timeout at offset {offset}. Retrying in {wait}s "
+                            f"({timeout_retries + 1}/{max_timeout_retries})..."
+                        )
+                        time.sleep(wait)
+                        timeout_retries += 1
+                        continue
+                    else:
+                        logger.error(f"Timeout persisted after {max_timeout_retries} retries at offset {offset}.")
+                        return None, field_selection
+
+                # --- Field type error: fix and retry ---
+                if error_name == "entity.error/query-primitive-field-expr-invalid":
+                    error_data = error_info.get("data", {})
+                    problematic_field = error_data.get("field", [None])[0]
+
+                    if problematic_field:
+                        logger.warning(f"Field '{problematic_field}' is not primitive. Attempting to fix...")
+
+                        alias_to_fix = next(
+                            (alias for alias, spec in field_selection.items()
+                             if isinstance(spec, list) and spec[0] == problematic_field),
+                            None,
+                        )
+
+                        if alias_to_fix:
+                            current_spec = field_selection[alias_to_fix]
+
+                            if len(current_spec) == 1:
+                                field_selection[alias_to_fix] = [problematic_field, "enum/name"]
+                                logger.info(f"Trying enum/name for '{problematic_field}'")
+                            elif len(current_spec) == 2 and current_spec[1] == "enum/name":
+                                space_name = problematic_field.split("/")[0]
+                                field_selection[alias_to_fix] = [problematic_field, f"{space_name}/Name"]
+                                logger.info(f"Trying Space/Name for '{problematic_field}'")
+                            else:
+                                logger.warning(f"Could not fix '{problematic_field}'. Removing from query.")
+                                del field_selection[alias_to_fix]
+
+                            field_retries += 1
+                            timeout_retries = 0  # reset timeout counter after a field fix
+                            continue
+                        else:
+                            logger.error(f"Could not find alias for problematic field: {problematic_field}")
+                            return None, field_selection
+
+                logger.error(f"Fibery API error: {error_message}")
+                logger.debug(f"Error details: {error_info}")
+                return None, field_selection
+
+            # Success
+            return data[0]["result"], field_selection
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Request error at offset {offset}: {e}", exc_info=True)
+            return None, field_selection
+
+    logger.error(f"Failed to fix field selection after {max_field_retries} retries.")
+    return None, field_selection
+
+
 def read_fibery(
-    table_name: str, 
+    table_name: str,
     include_fibery_fields: bool = False,
     where_filter: Optional[List[Any]] = None,
-    params: Optional[Dict[str, Any]] = None
+    params: Optional[Dict[str, Any]] = None,
+    page_size: int = 1000,
 ) -> pd.DataFrame:
     """
     Reads all data from a Fibery table and returns it as a pandas DataFrame.
-    Automatically handles relational fields and enums.
-    
+    Automatically handles relational fields, enums, pagination, and timeouts.
+
     Args:
         table_name: The display name of the Fibery table to read.
         include_fibery_fields: Whether to include Fibery system fields (created-by, rank, etc.).
@@ -201,16 +323,18 @@ def read_fibery(
             Example: [">=", ["fibery/creation-date"], "$cutoffDate"]
         params: Optional dictionary of parameter values for the where_filter.
             Example: {"$cutoffDate": "2026-01-23T00:00:00Z"}
-    
+        page_size: Number of records per page. Reduce for heavy tables, increase for light ones.
+            Default is 1000.
+
     Returns:
         A pandas DataFrame with the table data.
-    
+
     Example:
-        # Filter by creation date
         df = read_fibery(
-            "Posição",
-            where_filter=[">=", ["fibery/creation-date"], "$cutoffDate"],
-            params={"$cutoffDate": "2026-01-23T00:00:00Z"}
+            "Inv-Asset Allocation/Posição",
+            where_filter=[">=", ["Inv-Asset Allocation/Data Posição"], "$dataRecente"],
+            params={"$dataRecente": "2026-01-01T00:00:00Z"},
+            page_size=500,
         )
     """
     db_schema = _get_db_schema()
@@ -222,154 +346,79 @@ def read_fibery(
         logger.error(f"Table '{table_name}' not found in the processed schema.")
         return pd.DataFrame()
 
-    canonical_name = table_meta['canonical_name']
-    all_fields = table_meta['fields']
-    
-    # Filter fields based on user preferences
-    str_to_remove = ['_deleted', 'Collaboration', 'Description', 'created-by', 'comments/comments']
+    canonical_name = table_meta["canonical_name"]
+    all_fields = table_meta["fields"]
+
+    str_to_remove = ["_deleted", "Collaboration", "Description", "created-by", "comments/comments"]
     if not include_fibery_fields:
-        str_to_remove.extend(['fibery/created-by', 'fibery/rank'])
-    
+        str_to_remove.extend(["fibery/created-by", "fibery/rank"])
+
     fields_to_query = {
-        field_name: field_info 
-        for field_name, field_info in all_fields.items() 
+        field_name: field_info
+        for field_name, field_info in all_fields.items()
         if not any(s in field_name for s in str_to_remove)
     }
 
-    logger.info(f"Reading all data from Fibery table: {canonical_name}")
-    
+    logger.info(f"Reading data from Fibery table: {canonical_name} (page_size={page_size})")
+
     api_url = _get_fibery_api_url("commands")
     headers = _get_fibery_headers()
-    all_entities = []
-    page_size = 'q/no-limit'  # or use 1000 for pagination
-
-    # Build the field selection
     field_selection = _build_field_selection(fields_to_query, canonical_name)
-    
-    max_retries = 3
-    retry_count = 0
-    
-    while retry_count < max_retries:
-        query = {
-            "q/from": canonical_name,
-            "q/select": field_selection,
-            "q/limit": page_size
-        }
-        
-        # Add where filter if provided
-        if where_filter is not None:
-            query["q/where"] = where_filter
-        
-        # Build the args with query and optional params
-        args = {"query": query}
-        if params is not None:
-            args["params"] = params
-            
-        payload = [{"command": "fibery.entity/query", "args": args}]
 
-        try:
-            response = requests.post(api_url, headers=headers, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            
-            if not data or not data[0].get("success"):
-                error_info = data[0].get('result', {})
-                error_name = error_info.get('name')
+    all_entities: List[Any] = []
+    offset = 0
 
-                if error_name == 'entity.error/query-primitive-field-expr-invalid':
-                    error_data = error_info.get('data', {})
-                    problematic_field = error_data.get('field', [None])[0]
-                    
-                    if problematic_field:
-                        logger.warning(f"Field '{problematic_field}' is not primitive. Attempting to fix...")
-                        
-                        # Find the alias for this field
-                        alias_to_fix = None
-                        for alias, field_spec in field_selection.items():
-                            if isinstance(field_spec, list) and field_spec[0] == problematic_field:
-                                alias_to_fix = alias
-                                break
-                        
-                        if alias_to_fix:
-                            # Try different strategies to fix the field
-                            current_spec = field_selection[alias_to_fix]
-                            
-                            # Strategy 1: If it's just [field], try adding 'enum/name'
-                            if len(current_spec) == 1:
-                                field_selection[alias_to_fix] = [problematic_field, 'enum/name']
-                                logger.info(f"Trying field with enum/name: {field_selection[alias_to_fix]}")
-                                retry_count += 1
-                                continue
-                            
-                            # Strategy 2: If enum/name didn't work, try with Space/Name
-                            elif len(current_spec) == 2 and current_spec[1] == 'enum/name':
-                                space_name = problematic_field.split('/')[0]
-                                field_selection[alias_to_fix] = [problematic_field, f'{space_name}/Name']
-                                logger.info(f"Trying field with Space/Name: {field_selection[alias_to_fix]}")
-                                retry_count += 1
-                                continue
-                            
-                            # Strategy 3: If nothing works, remove the field
-                            else:
-                                logger.warning(f"Could not fix field '{problematic_field}'. Removing it from query.")
-                                del field_selection[alias_to_fix]
-                                retry_count += 1
-                                continue
-                        else:
-                            logger.error(f"Could not find alias for problematic field: {problematic_field}")
-                            return pd.DataFrame()
-                else:
-                    logger.error(f"Fibery API error: {error_info.get('message', 'Unknown error')}")
-                    logger.debug(f"Error details: {error_info}")
-                    return pd.DataFrame()
-            else:
-                # Success! Query worked
-                page_entities = data[0]["result"]
-                all_entities.extend(page_entities)
-                
-                # Check if we need to paginate
-                if isinstance(page_size, int) and len(page_entities) < page_size:
-                    break
-                else:
-                    break
+    while True:
+        logger.debug(f"Fetching page at offset {offset}...")
+        page_entities, field_selection = _execute_fibery_page(
+            api_url=api_url,
+            headers=headers,
+            canonical_name=canonical_name,
+            field_selection=field_selection,
+            where_filter=where_filter,
+            params=params,
+            offset=offset,
+            page_size=page_size,
+        )
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Request error while reading from Fibery: {e}", exc_info=True)
-            return pd.DataFrame()
-    
-    if retry_count >= max_retries and not all_entities:
-        logger.error(f"Failed to read from Fibery after {max_retries} retries")
-        return pd.DataFrame()
-            
+        if page_entities is None:
+            if not all_entities:
+                return pd.DataFrame()
+            logger.warning("Stopping pagination due to an error. Returning partial data.")
+            break
+
+        all_entities.extend(page_entities)
+        logger.info(f"Fetched {len(all_entities)} records so far...")
+
+        if len(page_entities) < page_size:
+            break
+
+        offset += page_size
+
     if not all_entities:
         logger.warning(f"No entities found in {canonical_name}")
         return pd.DataFrame()
 
     df = pd.DataFrame(all_entities)
 
-    # Automatic datatype inference and conversion
     for col in df.columns:
         if df[col].dtype in ["object", "string"] and df[col].notnull().any():
-            # Attempt to convert to datetime
             try:
-                df[col] = pd.to_datetime(df[col]).dt.tz_convert('America/Sao_Paulo')
+                df[col] = pd.to_datetime(df[col]).dt.tz_convert("America/Sao_Paulo")
                 continue
             except (ValueError, TypeError):
                 pass
 
-            # Attempt to convert to numeric
             try:
                 df[col] = pd.to_numeric(df[col])
                 continue
             except ValueError:
                 pass
 
-            # Check for and map boolean-like strings
             unique_vals = df[col].dropna().unique()
-            if len(unique_vals) > 0 and all(v in ['true', 'false'] for v in unique_vals):
-                df[col] = df[col].map({'true': True, 'false': False})
+            if len(unique_vals) > 0 and all(v in ["true", "false"] for v in unique_vals):
+                df[col] = df[col].map({"true": True, "false": False})
 
-    # Convert columns to best possible dtypes that support pd.NA
     df = df.convert_dtypes()
 
     logger.info(f"Successfully read {len(df)} entities from {canonical_name}")

@@ -77,6 +77,20 @@ class Settings:
         self.IBKR_ACCESS_TOKEN = os.getenv('PERSEVERA_IBKR_ACCESS_TOKEN')
         self.IBKR_ACCESS_TOKEN_SECRET = os.getenv('PERSEVERA_IBKR_ACCESS_TOKEN_SECRET')
 
+        # Load BTG Pactual Web Platform (RM Admin) configuration
+        self.BTG_CLIENT_ID = os.getenv('PERSEVERA_BTG_CLIENT_ID')
+        self.BTG_CLIENT_SECRET = os.getenv('PERSEVERA_BTG_CLIENT_SECRET')
+        self.BTG_ACCOUNT_ID = os.getenv('PERSEVERA_BTG_ACCOUNT_ID')
+        # Optional: pre-supplied JWT from browser session (bypasses token endpoint)
+        self.BTG_JWT_TOKEN = os.getenv('PERSEVERA_BTG_JWT_TOKEN')
+
+        # ANBIMA Feed API (OAuth2 client_credentials)
+        self.ANBIMA_FEED_CLIENT_ID = os.getenv('PERSEVERA_ANBIMA_FEED_CLIENT_ID')
+        self.ANBIMA_FEED_CLIENT_SECRET = os.getenv('PERSEVERA_ANBIMA_FEED_CLIENT_SECRET')
+        # Default true: cadastro no portal costuma liberar sandbox primeiro; produção exige acesso específico
+        self.ANBIMA_FEED_SANDBOX = os.getenv('PERSEVERA_ANBIMA_FEED_SANDBOX', 'true')
+        self.ANBIMA_FEED_BASE_URL = os.getenv('PERSEVERA_ANBIMA_FEED_BASE_URL')
+
     def get_gs_client_secret(self):
         return {
             "installed":{

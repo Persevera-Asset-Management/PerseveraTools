@@ -180,3 +180,4 @@ cython_debug/
 
 persevera_tools/data/providers/ws_xp.py
 persevera_tools/data/providers/ws_ibkr.py
+persevera_tools/data/providers/anbima_feed.py
