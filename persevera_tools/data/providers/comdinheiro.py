@@ -323,10 +323,12 @@ class ComdinheiroProvider(DataProvider):
                 "nome_portfolio": "carteira",
                 "ativo": "ativo",
                 "desc": "descricao",
+                "quant": "quantidade",
+                "pu": "preco_unitario",
                 "saldo_bruto": "saldo_bruto",
                 "instituicao_financeira": "instituicao_financeira",
                 "tipo_ativo": "tipo_ativo",
-                "mv(estrategia)": "estrategia"
+                "ticker_cmd": "ticker_cd",
             }
             
             df = self._fetch_positions(date_report, portfolios, variable_names.keys())
