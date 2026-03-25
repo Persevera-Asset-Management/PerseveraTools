@@ -1,18 +1,17 @@
 from datetime import datetime
 from typing import Optional, Union, List, Literal
 import pandas as pd
-import numpy as np
-from itertools import product
 
-# from ..db.operations import read_sql
 from persevera_tools.db.operations import read_sql
 
-def get_emissions(index_code: Optional[Union[str, List[str]]] = None,
-                  start_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
-                  selected_fields: Optional[List[str]] = None,
-                  deb_incent_lei_12431: Optional[bool] = None) -> pd.DataFrame:
+
+def get_emissions(
+    index_code: Optional[Union[str, List[str]]] = None,
+    start_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
+    selected_fields: Optional[List[str]] = None,
+    deb_incent_lei_12431: Optional[bool] = None) -> pd.DataFrame:
     """Get emissions from credito_privado_emissoes table.
-    
+
     Args:
         index_code: Single index code, list of index codes, or None to retrieve all codes.
         start_date: Optional start date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp
@@ -21,7 +20,6 @@ def get_emissions(index_code: Optional[Union[str, List[str]]] = None,
     Returns:
         DataFrame with emissions data, indexed by 'data_emissao'.
     """
-    # Validate index_code
     index_codes = []
     if index_code is not None:
         if isinstance(index_code, str):
@@ -30,7 +28,7 @@ def get_emissions(index_code: Optional[Union[str, List[str]]] = None,
             index_codes = index_code
         else:
             raise ValueError("index_code must be a string or list of strings")
-        
+
         if not all(isinstance(idx, str) and idx for idx in index_codes):
             raise ValueError("All index codes must be non-empty strings")
 
@@ -38,11 +36,10 @@ def get_emissions(index_code: Optional[Union[str, List[str]]] = None,
         if not all(isinstance(field, str) and field for field in selected_fields):
             raise ValueError("All selected fields must be non-empty strings")
     else:
-        selected_fields = ['code', 'empresa', 'data_emissao','data_vencimento', 'valor_nominal_na_emissao', 'quantidade_emitida', 'indice', 'percentual_multiplicador_rentabilidade']
-    
-    # Convert and validate dates if provided
+        selected_fields = ['code', 'empresa', 'data_emissao', 'data_vencimento', 'valor_nominal_na_emissao', 'quantidade_emitida', 'indice', 'percentual_multiplicador_rentabilidade']
+
     start_date_str = None
-    
+
     if start_date is not None:
         if isinstance(start_date, str):
             try:
@@ -55,15 +52,14 @@ def get_emissions(index_code: Optional[Union[str, List[str]]] = None,
             start_date_str = start_dt.strftime("%Y-%m-%d")
         else:
             raise ValueError("start_date must be a string, datetime, or pandas Timestamp")
-    
-    # Build query
+
     field_str = ", ".join(selected_fields)
-    
+
     query = f"""
         SELECT {field_str}
-        FROM credito_privado_emissoes 
+        FROM credito_privado_emissoes
     """
-    
+
     where_clauses = []
     if index_codes:
         index_str = "','".join(index_codes)
@@ -71,59 +67,60 @@ def get_emissions(index_code: Optional[Union[str, List[str]]] = None,
 
     if start_date_str:
         where_clauses.append(f"data_emissao >= '{start_date_str}'")
-        
+
     if deb_incent_lei_12431 is not None:
         if deb_incent_lei_12431:
-            where_clauses.append(f"deb_incent_lei_12431 = TRUE")
+            where_clauses.append("deb_incent_lei_12431 = TRUE")
         else:
-            where_clauses.append(f"deb_incent_lei_12431 = FALSE")
-        
+            where_clauses.append("deb_incent_lei_12431 = FALSE")
+
     if where_clauses:
         query += " WHERE " + " AND ".join(where_clauses)
-        
+
     query += " ORDER BY data_emissao, code"
-    
+
     date_fields = [field for field in selected_fields if 'data' in field]
     df = read_sql(query, date_columns=date_fields)
-    
+
     if df.empty:
         raise ValueError("No data found")
-    
+
     if 'quantidade_emitida' in df.columns and 'valor_nominal_na_emissao' in df.columns:
         df['volume_emissao'] = df['valor_nominal_na_emissao'] * df['quantidade_emitida']
 
     if 'data_emissao' in df.columns:
         df = df.set_index('data_emissao')
-    
+
     return df
 
-def get_series(code: Optional[Union[str, List[str]]] = None,
-               start_date: Optional[Union[str, datetime, pd.Timestamp]] = None, 
-               end_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
-               field: Union[str, List[str]] = 'yield_to_maturity',
-               source: Literal['anbima', 'b3', 'all'] = 'all',
-               category: Optional[Literal['credito_privado_di', 'credito_privado_ipca', 'titulos_publicos']] = None) -> Union[pd.DataFrame, pd.Series]:
-    """
-    Get time series data for one or more private credit indicators from the database.
-    
+
+def get_series(
+    code: Optional[Union[str, List[str]]] = None,
+    start_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
+    end_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
+    field: Union[str, List[str]] = 'yield_to_maturity',
+    source: Literal['anbima', 'b3', 'all'] = 'all',
+    category: Optional[Literal['credito_privado_di', 'credito_privado_ipca', 'titulos_publicos']] = None) -> Union[pd.DataFrame, pd.Series]:
+    """Get time series data for one or more fixed income indicators from the database.
+
     Args:
         code: Single indicator code, list of codes, or None to retrieve all codes.
         start_date: Optional start date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp.
         end_date: Optional end date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp.
         field: Field or list of fields to retrieve (default: 'yield_to_maturity').
-        source: Source of the data (default: 'anbima'). Can be 'anbima', 'b3', or 'all'.
+        source: Source of the data (default: 'all'). Can be 'anbima', 'b3', or 'all'.
+        category: Data category. One of 'credito_privado_di', 'credito_privado_ipca', 'titulos_publicos', or None.
     Returns:
-        pd.Series or pd.DataFrame: 
+        pd.Series or pd.DataFrame:
         - A Series if a single code and a single field are requested.
         - A DataFrame with fields as columns if a single code and multiple fields are requested.
         - A DataFrame with codes as columns if multiple codes and a single field are requested.
         - A DataFrame with a MultiIndex (code, field) for columns if multiple codes and fields are requested.
         The columns will be ordered according to the input lists of codes and fields if provided.
-        
+
     Raises:
         ValueError: If dates are in invalid format or if end_date is before start_date.
     """
-    # Validate codes
     codes = []
     if code is not None:
         if isinstance(code, str):
@@ -132,11 +129,10 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
             codes = code
         else:
             raise ValueError("code must be a string or list of strings")
-    
+
         if not all(isinstance(c, str) and c for c in codes):
             raise ValueError("All codes must be non-empty strings")
 
-    # Validate fields
     if isinstance(field, str):
         fields = [field]
     elif isinstance(field, list):
@@ -147,10 +143,9 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
     if not all(isinstance(f, str) and f for f in fields):
         raise ValueError("All fields must be non-empty strings")
 
-    # Convert and validate dates if provided
     start_date_str = None
     end_date_str = None
-    
+
     if start_date is not None:
         if isinstance(start_date, str):
             try:
@@ -163,7 +158,7 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
             start_date_str = start_dt.strftime("%Y-%m-%d")
         else:
             raise ValueError("start_date must be a string, datetime, or pandas Timestamp")
-    
+
     if end_date is not None:
         if isinstance(end_date, str):
             try:
@@ -176,11 +171,10 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
             end_date_str = end_dt.strftime("%Y-%m-%d")
         else:
             raise ValueError("end_date must be a string, datetime, or pandas Timestamp")
-    
+
     if start_date is not None and end_date is not None and start_dt > end_dt:
         raise ValueError("end_date cannot be before start_date")
 
-    # Build query using validated parameters
     if category == 'credito_privado_di':
         table_name = 'credito_privado_historico'
         cols = ['date', 'code', 'field', 'value']
@@ -200,7 +194,6 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
     else:
         raise ValueError("Invalid category")
 
-    # If user requested all sources, include source column only when table has it
     table_has_source = table_name == 'credito_privado_historico'
     if source == 'all' and table_has_source and 'source' not in cols:
         cols = cols + ['source']
@@ -209,7 +202,7 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
     cols_str = ",".join(cols)
     query = f"""
         SELECT {cols_str}
-        FROM {table_name} 
+        FROM {table_name}
         WHERE field IN ('{fields_str}')
     """
 
@@ -219,25 +212,24 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
     if codes:
         codes_str = "','".join(codes)
         query += f" AND code IN ('{codes_str}')"
-    
+
     if start_date_str:
         query += f" AND date >= '{start_date_str}'"
     if end_date_str:
         query += f" AND date <= '{end_date_str}'"
-        
+
     query += " ORDER BY date, code, field"
-    
+
     df = read_sql(query, date_columns=date_cols)
     if category in ['credito_privado_ipca', 'titulos_publicos']:
         return df
-    
+
     if df.empty:
         if codes:
             raise ValueError(f"No data found for code(s) {codes} with field(s) {fields}")
         else:
             raise ValueError(f"No data found for any codes with field(s) {fields}")
-    
-    # Pivot the data to get the desired format
+
     group_cols = ['code', 'field']
     if 'source' in df.columns:
         group_cols.append('source')
@@ -246,28 +238,13 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
         columns=group_cols,
         values='value'
     )
-    # if source == 'all':
-    #     df = df.pivot_table(
-    #         index='date',
-    #         columns=['code', 'field', 'source'],
-    #         values='value'
-    #     )
-    # else:
-    #     df = df.pivot_table(
-    #         index='date',
-    #         columns=['code', 'field'],
-    #         values='value'
-    #     )
-    
-    # Simplify output and reorder columns
+
     if source == 'all':
         if code is not None:
             if len(codes) == 1 and len(fields) == 1:
-                # Return a DataFrame with sources as columns
                 df = df.droplevel(['code', 'field'], axis=1)
                 return df
             elif len(codes) == 1:
-                # Columns: (field, source)
                 df = df.droplevel('code', axis=1)
                 try:
                     sources = list(df.columns.get_level_values('source').unique())
@@ -276,7 +253,6 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
                 except Exception:
                     pass
             elif len(fields) == 1:
-                # Columns: (code, source)
                 df = df.droplevel('field', axis=1)
                 try:
                     sources = list(df.columns.get_level_values('source').unique())
@@ -286,9 +262,9 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
                     pass
         else:
             if len(fields) == 1:
-                # Columns: (code, source)
                 df = df.droplevel('field', axis=1)
     else:
+        from itertools import product
         if code is not None:
             if len(codes) == 1 and len(fields) == 1:
                 series = df.iloc[:, 0]
@@ -305,101 +281,7 @@ def get_series(code: Optional[Union[str, List[str]]] = None,
                 df = df.reindex(columns=new_columns)
         elif len(fields) == 1:
             df = df.droplevel('field', axis=1)
-    
-    # Drop columns with all NaN values
+
     df = df.dropna(how='all', axis=1)
 
     return df
-
-def calculate_spread(index_code: str,
-                     start_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
-                     end_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
-                     field: Union[str, List[str]] = 'yield_to_maturity',
-                     calculate_distribution: bool = False,
-                     deb_incent_lei_12431: Optional[bool] = None) -> pd.DataFrame:
-    """Calculate the spread for a given code.
-    
-    Args:
-        index_code: Single index code
-        start_date: Optional start date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp.
-        end_date: Optional end date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp.
-        field: Field or list of fields to retrieve (default: 'yield_to_maturity')
-        calculate_distribution: Whether to calculate the distribution of the spread
-    Returns:
-        DataFrame with spread data, indexed by 'date'.
-    """
-    # Get the series for the index
-    emissions = get_emissions(index_code=index_code, deb_incent_lei_12431=deb_incent_lei_12431)
-    
-    if index_code == 'DI':
-        codes = emissions[emissions['percentual_multiplicador_rentabilidade'] == 100]['code'].tolist()
-        series = get_series(code=codes, source='anbima', category='credito_privado_di', start_date=start_date, end_date=end_date, field=field)
-        # Adapt to MultiIndex columns (code, field, source) from get_series
-        if isinstance(series.columns, pd.MultiIndex):
-            selected_field = field[0] if isinstance(field, list) and len(field) > 0 else (field if isinstance(field, str) else 'yield_to_maturity')
-            if 'field' in series.columns.names:
-                series = series.xs(selected_field, axis=1, level='field')
-            if 'source' in series.columns.names:
-                series = series.xs('anbima', axis=1, level='source')
-        series = series.interpolate(limit=5)
-    elif index_code == 'IPCA':
-        codes = emissions['code'].tolist()
-        series_ipca = get_series(code=codes, source='anbima', category='credito_privado_ipca', start_date=start_date, end_date=end_date, field=field)
-        series_ipca = series_ipca.replace(0., np.nan)
-        series_ipca_interpolated = series_ipca.pivot_table(index='date', columns='code', values='value').interpolate(limit=5).stack().reset_index()
-        series_ipca_interpolated = pd.merge(series_ipca_interpolated, series_ipca[['code', 'reference']].drop_duplicates(), on=['code'], how='left').dropna().drop_duplicates()
-        series_ipca_interpolated.columns = ['date', 'code', 'value', 'reference']
-
-        series_titulos_publicos = get_series(code='NTN-B', category='titulos_publicos', start_date=start_date, end_date=end_date, field=field)
-        # Ensure merge keys exist as columns
-        if isinstance(series_titulos_publicos.index, pd.MultiIndex):
-            series_titulos_publicos = series_titulos_publicos.reset_index()
-        elif getattr(series_titulos_publicos.index, "name", None) in ['date', 'maturity']:
-            series_titulos_publicos = series_titulos_publicos.reset_index()
-        # Prefer a single source to avoid duplicates on merge
-        if 'source' in series_titulos_publicos.columns:
-            unique_sources = series_titulos_publicos['source'].unique().tolist()
-            if 'anbima' in unique_sources:
-                series_titulos_publicos = series_titulos_publicos[series_titulos_publicos['source'] == 'anbima']
-            series_titulos_publicos = series_titulos_publicos.drop(columns=['source'])
-        series_merged = pd.merge(series_ipca_interpolated, series_titulos_publicos, left_on=['date', 'reference'], right_on=['date', 'maturity'], how='inner')
-        series_merged = series_merged.drop(columns=['code_y', 'maturity', 'reference'])
-        series_merged.columns = ['date', 'code', 'yield_to_maturity', 'ytm_ntnb']
-        series_merged['spread'] = series_merged['yield_to_maturity'] - series_merged['ytm_ntnb']
-        series = series_merged.pivot_table(index='date', columns='code', values='spread')
-        series = series.interpolate(limit=5)
-    else:
-        raise ValueError("Invalid index code")
-    
-    emissions = emissions[emissions['code'].isin(series.columns)]
-
-    volume_map = emissions.set_index('code')['volume_emissao']
-    # volume_df = pd.DataFrame({col: volume_map[col] for col in series.columns}, index=series.index)
-    # volume_df = (volume_df * (series > 0)).replace(0., np.nan)
-
-    series = series.replace(0., np.nan)
-    volume_df = series.where(series.isna(), 1) * volume_map
-    weight_df = volume_df.div(volume_df.sum(axis=1), axis=0)
-
-    # Calculate the spread
-    spread = pd.DataFrame(index=series.index)
-    spread['median'] = series.median(axis=1)
-    spread['mean'] = series.mean(axis=1)
-    spread['weighted_mean'] = (series * weight_df).sum(axis=1)
-
-    if calculate_distribution:
-        spread['count_above_mean'] = (series.T > spread['mean'].values).T.sum(axis=1)
-        spread['count_under_mean'] = (series.T <= spread['mean'].values).T.sum(axis=1)
-        spread['volume_above_mean'] = ((series.T > spread['mean'].values).T * volume_df).sum(axis=1)
-        spread['volume_under_mean'] = ((series.T <= spread['mean'].values).T * volume_df).sum(axis=1)
-        
-        spread['count_yield_under_neg50bp'] = ((series.T < -0.50)).T.sum(axis=1)
-        spread['count_yield_neg50_0bp'] = ((series.T >= -0.50) & (series.T < 0.)).T.sum(axis=1)
-        spread['count_yield_0_50bp'] = ((series.T >= 0.) & (series.T < 0.50)).T.sum(axis=1)
-        spread['count_yield_50_75bp'] = ((series.T >= 0.50) & (series.T < 0.75)).T.sum(axis=1)
-        spread['count_yield_75_100bp'] = ((series.T >= 0.75) & (series.T < 1.00)).T.sum(axis=1)
-        spread['count_yield_100_150bp'] = ((series.T >= 1.00) & (series.T < 1.50)).T.sum(axis=1)
-        spread['count_yield_150_250bp'] = ((series.T >= 1.50) & (series.T < 2.50)).T.sum(axis=1)
-        spread['count_yield_above_250bp'] = (series.T >= 2.50).T.sum(axis=1)
-    return spread
-    

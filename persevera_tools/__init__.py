@@ -5,5 +5,6 @@ from . import utils
 from . import db
 from . import data
 from . import quant_research
+from . import fixed_income
 
-__version__ = "0.10.2"
+__version__ = "0.10.3"
