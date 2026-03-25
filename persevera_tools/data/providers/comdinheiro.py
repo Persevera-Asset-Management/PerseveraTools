@@ -339,8 +339,9 @@ class ComdinheiroProvider(DataProvider):
             df.columns = variable_names.values()
             df['date'] = pd.to_datetime(df['date'])
 
-            if 'saldo_bruto' in df.columns:
-                df['saldo_bruto'] = pd.to_numeric(df['saldo_bruto'], errors='coerce')
+            for col in ['quantidade', 'preco_unitario', 'saldo_bruto']:
+                if col in df.columns:
+                    df[col] = pd.to_numeric(df[col], errors='coerce')
             
             return df
         
