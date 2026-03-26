@@ -21,7 +21,7 @@ class ComdinheiroProvider(DataProvider):
         self.username = username or COMDINHEIRO_USERNAME
         self.password = password or COMDINHEIRO_PASSWORD
 
-    def _fetch_positions(self, date_report: str, portfolios: list[str], variables: list[str]) -> pd.DataFrame:
+    def _fetch_positions(self, date_report: str, portfolios: list[str], variable_names: list[str]) -> pd.DataFrame:
         """
         Fetches portfolio positions from the Comdinheiro API.
         """
@@ -29,7 +29,7 @@ class ComdinheiroProvider(DataProvider):
         report_url_params = {
             'data_analise': date_report_str,
             'nome_portfolio': '+'.join(portfolios),
-            'variaveis': '+'.join(variables),
+            'variaveis': '+'.join(k for k, _ in variable_names),
             'filtro': 'all',
             'filtro_IF': 'todos',
             'layout': '0',
@@ -318,25 +318,26 @@ class ComdinheiroProvider(DataProvider):
             if not portfolios or not date_report:
                 raise ValueError("`portfolios` and `date_report` must be provided for 'portfolio_positions'")
 
-            variable_names = {
-                "data_analise": "date",
-                "nome_portfolio": "carteira",
-                "ativo": "ativo",
-                "desc": "descricao",
-                "quant": "quantidade",
-                "pu": "preco_unitario",
-                "saldo_bruto": "saldo_bruto",
-                "instituicao_financeira": "instituicao_financeira",
-                "tipo_ativo": "tipo_ativo",
-                "ticker_cmd": "ticker_cd",
-            }
+            variable_names = [
+                ("data_analise", "date"),
+                ("nome_portfolio", "carteira"),
+                ("ativo", "ativo"),
+                ("ativo", "ticker"),
+                ("desc", "descricao"),
+                ("quant", "quantidade"),
+                ("pu", "preco_unitario"),
+                ("saldo_bruto", "saldo_bruto"),
+                ("instituicao_financeira", "instituicao_financeira"),
+                ("tipo_ativo", "tipo_ativo"),
+                # ("ticker_cmd", "ticker_cd"),
+            ]
             
-            df = self._fetch_positions(date_report, portfolios, variable_names.keys())
+            df = self._fetch_positions(date_report, portfolios, variable_names)
 
             if df.empty:
                 return pd.DataFrame()
 
-            df.columns = variable_names.values()
+            df.columns = [name for _, name in variable_names]
             df['date'] = pd.to_datetime(df['date'])
 
             for col in ['quantidade', 'preco_unitario', 'saldo_bruto']:
