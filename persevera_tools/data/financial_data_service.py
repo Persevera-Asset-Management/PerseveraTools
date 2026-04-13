@@ -1,7 +1,6 @@
 from typing import Optional, Dict, List, Union, Literal, Any
 import pandas as pd
 import logging
-from datetime import datetime
 
 from .providers.bloomberg import BloombergProvider, DataCategory
 from .providers.sgs import SGSProvider
@@ -127,18 +126,10 @@ class FinancialDataService:
                     return df
                 
                 if save_to_db:
-                    self.logger.info(f"Saving {len(df)} rows to database")
+                    db_table = table_name or ('indicadores' if data_type == 'market' else 'factor_zoo')
+                    self.logger.info(f"Saving {len(df)} rows to '{db_table}'")
                     try:
-                        # Use custom table name if provided, otherwise use default based on data_type
-                        db_table = table_name or ('indicadores' if data_type == 'market' else 'factor_zoo')
-                        
-                        to_sql(
-                            data=df,
-                            table_name=db_table,
-                            primary_keys=['code', 'date', 'field'],
-                            update=True,
-                            batch_size=5000
-                        )
+                        df = self._save_to_db(df, db_table, ['code', 'date', 'field'])
                     except Exception as e:
                         self.logger.error(f"Failed to save data to database: {str(e)}")
                         raise
@@ -190,15 +181,9 @@ class FinancialDataService:
                     return df
                 
                 if save_to_db:
-                    self.logger.info(f"Saving {len(df)} rows to table '{table_name}'")
+                    self.logger.info(f"Saving {len(df)} rows to '{table_name}'")
                     try:
-                        to_sql(
-                            data=df,
-                            table_name=table_name,
-                            primary_keys=['fund_cnpj', 'date'],
-                            update=True,
-                            batch_size=5000
-                        )
+                        df = self._save_to_db(df, table_name, ['fund_cnpj', 'date'])
                     except Exception as e:
                         self.logger.error(f"Failed to save data to database: {str(e)}")
                         raise
@@ -247,15 +232,9 @@ class FinancialDataService:
                     return df
                 
                 if save_to_db:
-                    self.logger.info(f"Saving {len(df)} rows to table '{table_name}'")
+                    self.logger.info(f"Saving {len(df)} rows to '{table_name}'")
                     try:
-                        to_sql(
-                            data=df,
-                            table_name=table_name,
-                            primary_keys=['date', 'event_id'],
-                            update=True,
-                            batch_size=5000
-                        )
+                        df = self._save_to_db(df, table_name, ['date', 'event_id'])
                     except Exception as e:
                         self.logger.error(f"Failed to save data to database: {str(e)}")
                         raise
@@ -337,18 +316,11 @@ class FinancialDataService:
                     return df
                 
                 if save_to_db:
-                    self.logger.info(f"Saving {len(df)} rows to database")
+                    db_table = table_name or default_table
+                    effective_keys = primary_keys or default_primary_keys
+                    self.logger.info(f"Saving {len(df)} rows to '{db_table}'")
                     try:
-                        # Use custom table name if provided, otherwise use default
-                        db_table = table_name or default_table
-                        
-                        to_sql(
-                            data=df,
-                            table_name=db_table,
-                            primary_keys=primary_keys or default_primary_keys,
-                            update=True,
-                            batch_size=5000
-                        )
+                        df = self._save_to_db(df, db_table, effective_keys)
                     except Exception as e:
                         self.logger.error(f"Failed to save data to database: {str(e)}")
                         raise
@@ -366,6 +338,29 @@ class FinancialDataService:
         self.logger.error(error_msg)
         raise RuntimeError(error_msg)
         
+    def _save_to_db(
+        self,
+        df: pd.DataFrame,
+        table_name: str,
+        primary_keys: List[str],
+    ) -> pd.DataFrame:
+        """Deduplicate df on primary_keys and upsert into the database table."""
+        n_before = len(df)
+        df = df.drop_duplicates(subset=primary_keys, keep='last')
+        n_dropped = n_before - len(df)
+        if n_dropped:
+            self.logger.warning(
+                f"Dropped {n_dropped} duplicate rows on {primary_keys} before upsert"
+            )
+        to_sql(
+            data=df,
+            table_name=table_name,
+            primary_keys=primary_keys,
+            update=True,
+            batch_size=5000,
+        )
+        return df
+
     @staticmethod
     def create_tickers_mapping(tickers_dict: Dict[str, str], category: str) -> Dict[str, Dict[str, str]]:
         """

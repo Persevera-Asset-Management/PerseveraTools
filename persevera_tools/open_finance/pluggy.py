@@ -112,6 +112,20 @@ class PluggyService:
             logger.error(f"Error fetching investments for item_id {item_id}: {e}")
             return []
 
+    def get_investment_transactions(self, item_id: str) -> List[Dict[str, Any]]:
+        logger.info(f"Extracting investment transaction data for item_id: {item_id}")
+        url = f"https://api.pluggy.ai/investments/{item_id}/transactions"
+        headers = {"X-API-KEY": self.api_key, "Content-Type": "application/json"}
+        
+        try:
+            response = requests.get(url, headers=headers)
+            response.raise_for_status()
+            transactions = response.json().get("results", [])
+            return self._convert_dates(transactions)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Error fetching investment transactions for item_id {item_id}: {e}")
+            return []
+
     def get_transactions(self, account_id: str) -> List[Dict[str, Any]]:
         """
         Retrieves detailed transaction data for a given account_id.

@@ -4,6 +4,44 @@ import pandas as pd
 import numpy as np
 
 from persevera_tools.fixed_income.data import get_emissions, get_series
+from persevera_tools.utils.dates import get_holidays
+
+
+def _macaulay_duration(
+    ytm: float,
+    coupon_rate: float,
+    years_to_maturity: float,
+    coupon_frequency: int = 1,
+) -> float:
+    """Calculate Macaulay Duration via discounted cash flow.
+
+    For zero-coupon bonds (coupon_rate=0), returns years_to_maturity directly,
+    since the single cash flow at maturity makes D_mac = T by definition.
+
+    Args:
+        ytm: Annual yield to maturity as a decimal (e.g., 0.12 for 12%).
+        coupon_rate: Annual coupon rate as a decimal (0.0 for zero-coupon bonds).
+        years_to_maturity: Remaining time to maturity in years.
+        coupon_frequency: Number of coupon payments per year (default: 1).
+    Returns:
+        Macaulay Duration in years.
+    """
+    if coupon_rate == 0.0:
+        return years_to_maturity
+
+    y = ytm / coupon_frequency
+    c = coupon_rate / coupon_frequency
+    n = max(1, round(years_to_maturity * coupon_frequency))
+
+    periods = np.arange(1, n + 1)
+    cash_flows = np.full(n, c)
+    cash_flows[-1] += 1.0  # face value returned at maturity
+
+    pv_flows = cash_flows / (1.0 + y) ** periods
+    times = periods / coupon_frequency
+
+    total_pv = pv_flows.sum()
+    return float((times * pv_flows).sum() / total_pv) if total_pv > 0 else 0.0
 
 
 def calculate_spread(
@@ -94,3 +132,166 @@ def calculate_spread(
         spread['count_yield_above_250bp'] = (series.T >= 2.50).T.sum(axis=1)
 
     return spread
+
+
+def calculate_duration(
+    code: str,
+    settlement_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
+    ytm: Optional[float] = None,
+    coupon_rate: Optional[float] = None,
+    coupon_frequency: int = 1,
+    maturity_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
+    indice: Optional[str] = None,
+    use_anbima: bool = True,
+) -> dict:
+    """Calculate Macaulay Duration for a single fixed income asset.
+
+    Attempts first to use the duration published by ANBIMA in the database.
+    If unavailable (e.g. CRI, CRA, CDB), falls back to an analytical
+    calculation using the yield to maturity and maturity date from the database.
+
+    The analytical fallback assumes a bullet structure (no amortization) with
+    periodic coupons. When coupon_rate is not provided, a par-bond approximation
+    is used (coupon_rate = ytm), which is accurate for bonds trading near par.
+    For zero-coupon bonds, pass coupon_rate=0.0; duration equals years_to_maturity.
+
+    Day count conventions:
+    - DI-linked bonds: DU/252 (ANBIMA holiday calendar from the database).
+    - IPCA-linked and pre-fixed bonds: ACT/365.
+
+    Args:
+        code: Bond code (e.g., 'ABCD11', 'CRI-XYZ123').
+        settlement_date: Calculation date. Defaults to the most recent available date.
+        ytm: Annual yield to maturity as a decimal (e.g., 0.12 for 12%). When
+             provided, skips the database lookup for yield. Required for bonds
+             without historical series in the database (e.g. CDBs) or for
+             prospective calculations using a future settlement_date.
+        coupon_rate: Annual coupon rate as a decimal (e.g., 0.12 for 12%).
+                     Use 0.0 for zero-coupon bonds. Overrides the par-bond
+                     approximation when provided.
+        coupon_frequency: Number of coupon payments per year (default: 1, annual).
+        maturity_date: Bond maturity date. When provided, skips the database
+                       lookup in the emissions table. Required for bonds not
+                       registered in the emissions table (e.g. CDBs).
+        indice: Index type used to select the day count convention: 'DI' uses
+                DU/252; any other value uses ACT/365. When provided, skips the
+                database lookup for this field. Defaults to 'DI' if omitted and
+                maturity_date is supplied directly.
+        use_anbima: If True, returns the ANBIMA-published duration when available.
+    Returns:
+        dict with keys:
+            - 'macaulay_duration': Macaulay Duration in years.
+            - 'years_to_maturity': Remaining time to maturity in years (None if ANBIMA source).
+            - 'ytm': Yield to maturity used (decimal).
+            - 'coupon_rate': Coupon rate used (decimal, None if ANBIMA source).
+            - 'source': 'anbima' or 'calculated'.
+            - 'settlement_date': The settlement date used for the calculation.
+    Raises:
+        ValueError: If the bond code is not found or required data is missing.
+    """
+    if settlement_date is None:
+        settlement_dt = pd.Timestamp.today().normalize()
+    elif isinstance(settlement_date, str):
+        settlement_dt = pd.Timestamp(settlement_date)
+    elif isinstance(settlement_date, (datetime, pd.Timestamp)):
+        settlement_dt = pd.Timestamp(settlement_date)
+    else:
+        raise ValueError("settlement_date must be a string, datetime, or pd.Timestamp")
+
+    end_date_str = settlement_dt.strftime('%Y-%m-%d')
+
+    if use_anbima and ytm is None:
+        try:
+            anbima_dur = get_series(
+                code=code, source='anbima', field='duration', end_date=end_date_str
+            )
+            if isinstance(anbima_dur, pd.Series):
+                anbima_dur = anbima_dur.dropna()
+            if not anbima_dur.empty:
+                latest_date = anbima_dur.index[-1]
+                latest_val = float(anbima_dur.iloc[-1])
+                ytm_val = None
+                try:
+                    ytm_series = get_series(
+                        code=code, source='anbima', field='yield_to_maturity', end_date=end_date_str
+                    )
+                    if not ytm_series.empty:
+                        ytm_val = float(ytm_series.dropna().iloc[-1]) / 100.0
+                except (ValueError, IndexError):
+                    pass
+                return {
+                    'macaulay_duration': latest_val,
+                    'years_to_maturity': None,
+                    'ytm': ytm_val,
+                    'coupon_rate': None,
+                    'source': 'anbima',
+                    'settlement_date': latest_date,
+                }
+        except (ValueError, IndexError, KeyError):
+            pass
+
+    if ytm is not None:
+        actual_settlement = settlement_dt
+        ytm_decimal = ytm
+    else:
+        ytm_series = get_series(
+            code=code, source='anbima', field='yield_to_maturity', end_date=end_date_str
+        )
+        if isinstance(ytm_series, pd.Series):
+            ytm_series = ytm_series.dropna()
+        if ytm_series.empty:
+            raise ValueError(
+                f"No yield_to_maturity data found for code '{code}'. "
+                "Provide ytm= explicitly for bonds without historical series or future dates."
+            )
+        ytm_decimal = float(ytm_series.iloc[-1]) / 100.0
+        actual_settlement = ytm_series.index[-1]
+
+    if maturity_date is not None:
+        maturity_date = pd.Timestamp(maturity_date)
+        if indice is None:
+            indice = 'DI'
+    else:
+        all_emissions = get_emissions(
+            selected_fields=['code', 'data_vencimento', 'indice', 'percentual_multiplicador_rentabilidade']
+        )
+        bond_emission = all_emissions[all_emissions['code'] == code]
+        if bond_emission.empty:
+            raise ValueError(
+                f"No emission data found for code '{code}'. "
+                "Provide maturity_date= explicitly for bonds not in the emissions table."
+            )
+        maturity_date = pd.Timestamp(bond_emission['data_vencimento'].iloc[0])
+        indice = bond_emission['indice'].iloc[0]
+
+    days_to_maturity = (maturity_date - actual_settlement).days
+    if days_to_maturity <= 0:
+        effective_coupon = coupon_rate if coupon_rate is not None else ytm_decimal
+        return {
+            'macaulay_duration': 0.0,
+            'years_to_maturity': 0.0,
+            'ytm': ytm_decimal,
+            'coupon_rate': effective_coupon,
+            'source': 'calculated',
+            'settlement_date': actual_settlement,
+        }
+
+    if indice == 'DI':
+        holidays = {h.date() for h in get_holidays()}
+        all_days = pd.date_range(actual_settlement + pd.Timedelta(days=1), maturity_date, freq='D')
+        bdays = sum(1 for d in all_days if d.weekday() < 5 and d.date() not in holidays)
+        years_to_maturity = bdays / 252.0
+    else:
+        years_to_maturity = days_to_maturity / 365.0
+
+    effective_coupon = coupon_rate if coupon_rate is not None else ytm_decimal
+    macaulay_dur = _macaulay_duration(ytm_decimal, effective_coupon, years_to_maturity, coupon_frequency)
+
+    return {
+        'macaulay_duration': macaulay_dur,
+        'years_to_maturity': years_to_maturity,
+        'ytm': ytm_decimal,
+        'coupon_rate': effective_coupon,
+        'source': 'calculated',
+        'settlement_date': actual_settlement,
+    }
