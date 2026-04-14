@@ -133,14 +133,24 @@ class BloombergProvider(DataProvider):
         elif category in self.tickers_mapping:
             securities_list = self.tickers_mapping[category]
         else:
-            # securities_list = get_codes(source='bloomberg', category=category)
             df_securities = read_fibery(
                 table_name='Inv-Rsrch-Quant/Indicadores',
                 include_fibery_fields=False
             )
-            df_securities = df_securities[(df_securities['Fonte'] == 'Bloomberg') & (df_securities['Categoria'] == category)][['Name', 'Código']]
+            df_securities = df_securities[
+                (df_securities['Fonte'] == 'Bloomberg') &
+                (df_securities['Categoria'] == category)
+            ][['Name', 'Código']]
             securities_list = df_securities.set_index('Name')['Código'].to_dict()
-        
+
+        if not securities_list:
+            self.logger.warning(
+                f"No Bloomberg securities found for category '{category}'. "
+                "Check that the category name matches the 'Categoria' field in Fibery "
+                "(Inv-Rsrch-Quant/Indicadores) or supply custom_tickers."
+            )
+            return pd.DataFrame(columns=['date', 'code', 'field', 'value'])
+
         if additional_fields:
             if custom_fields:
                 field_list = custom_fields
