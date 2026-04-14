@@ -141,7 +141,7 @@ class BloombergProvider(DataProvider):
                 (df_securities['Fonte'] == 'Bloomberg') &
                 (df_securities['Categoria'] == category)
             ][['Name', 'Código']]
-            securities_list = df_securities.set_index('Name')['Código'].to_dict()
+            securities_list = df_securities.set_index('Código')['Name'].to_dict()
 
         if not securities_list:
             self.logger.warning(
