@@ -10,12 +10,13 @@ from .base import DataProvider, DataRetrievalError
 from ..lookups import get_codes, get_securities_by_exchange
 from ...config import settings
 from ...db.operations import read_sql
+from ...db.fibery import read_fibery
 
 DATA_PATH = settings.DATA_PATH
 
 DataCategory = Literal[
     # Market data categories
-    'positions_cftc', 'macro', 'commodity', 'currency', 'equity',
+    'Atividade Bancária', 'CFTC', 'Commodity', 'Comérico', 'Crédito', 'Dívida', 'Equity', 'Futuros', 'Governo', 'Inflação', 'Macro', 'Moedas', 'Monetário', 'Setor Externo', 'Taxas', 'Trabalho', 'Varejo', 'Índices',
     # Company data categories
     'valuation', 'fundamentals', 'index_weight'
 ]
@@ -132,7 +133,13 @@ class BloombergProvider(DataProvider):
         elif category in self.tickers_mapping:
             securities_list = self.tickers_mapping[category]
         else:
-            securities_list = get_codes(source='bloomberg', category=category)
+            # securities_list = get_codes(source='bloomberg', category=category)
+            df_securities = read_fibery(
+                table_name='Inv-Rsrch-Quant/Indicadores',
+                include_fibery_fields=False
+            )
+            df_securities = df_securities[(df_securities['Fonte'] == 'Bloomberg') & (df_securities['Categoria'] == category)][['Name', 'Código']]
+            securities_list = df_securities.set_index('Name')['Código'].to_dict()
         
         if additional_fields:
             if custom_fields:

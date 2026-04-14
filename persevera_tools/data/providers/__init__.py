@@ -14,7 +14,7 @@ from .investing_com import InvestingComProvider
 from .debentures_com import DebenturesComProvider
 from .mdic import MDICProvider
 from .b3 import B3Provider
-# from .anbima_feed import AnbimaFeedProvider
+from .anbima_feed import AnbimaFeedProvider
 # from .ws_ibkr import IBKRWebProvider
 # from .ws_xp import XPWSProvider
 
