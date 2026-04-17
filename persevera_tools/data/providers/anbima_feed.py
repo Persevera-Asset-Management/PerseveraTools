@@ -6,6 +6,10 @@ https://developers.anbima.com.br/pt/documentacao/visao-geral/autenticacao/#oauth
 
 Production: https://api.anbima.com.br
 Sandbox: https://api-sandbox.anbima.com.br (hyphen; cert is for this hostname)
+
+Covers two API families:
+- Preços e Índices (AnbimaFeedProvider): /feed/precos-indices/...
+- Fundos v2 RCVM 175 (AnbimaFundosProvider): /feed/fundos/v2/fundos/...
 """
 
 import base64
@@ -26,6 +30,7 @@ ANBIMA_FEED_PRODUCTION = "https://api.anbima.com.br"
 ANBIMA_FEED_SANDBOX = "https://api-sandbox.anbima.com.br"
 OAUTH_PATH = "/oauth/access-token"
 FEED_BASE_PATH = "/feed/precos-indices"
+FUNDOS_BASE_PATH = "/feed/fundos/v2/fundos"
 
 # Map category -> (path_suffix, date_param_name)
 # path_suffix includes version (v1/ or v2/) and is appended to FEED_BASE_PATH
@@ -223,6 +228,19 @@ FEED_ENDPOINTS: Dict[str, tuple] = {
         "v2/ima-etf/negocios-extra",
         "data",
     ),
+}
+
+# Fundos v2 (RCVM 175) – endpoints that do NOT require a path-level code.
+# Value is the path suffix appended to FUNDOS_BASE_PATH.
+FUNDOS_ENDPOINTS: Dict[str, str] = {
+    # Lista de fundos (page, size, tipo_fundo)
+    "anbima_fundos_lista": "",
+    # Lista de instituições (page, size)
+    "anbima_fundos_instituicoes": "/instituicoes",
+    # Lote dados cadastrais (data_atualizacao obrigatório, tipo_fundo, page, size)
+    "anbima_fundos_lote_dados_cadastrais": "/dados-cadastrais/lote",
+    # Lote série histórica (data_atualizacao obrigatório, tipo_fundo, size, cursor)
+    "anbima_fundos_lote_serie_historica": "/serie-historica/lote",
 }
 
 
@@ -445,3 +463,141 @@ class AnbimaFeedProvider(DataProvider):
             )
         # return self._validate_output(df)
         return df
+
+
+class AnbimaFundosProvider(AnbimaFeedProvider):
+    """
+    Provider for ANBIMA Fundos v2 API – RCVM 175.
+
+    Reutiliza a autenticação OAuth2 de AnbimaFeedProvider.
+
+    Categorias disponíveis em get_data():
+      - anbima_fundos_lista                  : lista de fundos
+          kwargs: page, size, tipo_fundo
+      - anbima_fundos_instituicoes           : lista de instituições prestadoras de serviço
+          kwargs: page, size
+      - anbima_fundos_lote_dados_cadastrais  : lote com dados cadastrais de todos os fundos
+          kwargs: data_atualizacao (obrigatório), tipo_fundo, page, size
+      - anbima_fundos_lote_serie_historica   : lote com série histórica (PL & cota) de todos os fundos
+          kwargs: data_atualizacao (obrigatório), tipo_fundo, size, cursor
+
+    Métodos para endpoints com parâmetro de caminho:
+      - get_fundo_detalhes(codigo)           : detalhes completos de um fundo/classe/subclasse
+      - get_fundo_historico(codigo_fundo)    : histórico de alterações cadastrais de um fundo
+      - get_serie_historica(codigo, **kwargs): série histórica PL & cota de uma classe/subclasse
+          kwargs: data_inicio, data_fim, data_atualizacao
+      - get_instituicao_detalhes(cnpj)       : detalhes de uma instituição
+      - get_segmento_investidor(codigo, **kwargs): PL por segmento do investidor
+          kwargs: mes_referencia, ano_referencia
+      - get_notas_explicativas(codigo, **kwargs): notas explicativas de uma classe/subclasse
+          kwargs: page, size
+    """
+
+    def get_data(self, category: str, **kwargs) -> pd.DataFrame:
+        self._ensure_credentials()
+        self._log_processing(category)
+
+        if category not in FUNDOS_ENDPOINTS:
+            raise ValueError(
+                f"Unknown category: {category}. "
+                f"Supported: {list(FUNDOS_ENDPOINTS.keys())}"
+            )
+
+        path_suffix = FUNDOS_ENDPOINTS[category]
+        path = f"{FUNDOS_BASE_PATH}{path_suffix}"
+
+        params: Dict[str, Any] = {}
+        if kwargs.get("page") is not None:
+            params["page"] = kwargs["page"]
+        if kwargs.get("size") is not None:
+            params["size"] = kwargs["size"]
+        if kwargs.get("tipo_fundo") is not None:
+            params["tipo-fundo"] = kwargs["tipo_fundo"]
+        if kwargs.get("data_atualizacao") is not None:
+            params["data-atualizacao"] = kwargs["data_atualizacao"]
+        if kwargs.get("cursor") is not None:
+            params["cursor"] = kwargs["cursor"]
+
+        raw = self._get(path, params=params or None)
+        if isinstance(raw, dict):
+            rows = raw.get("content", raw)
+        else:
+            rows = raw
+        df = pd.DataFrame(rows if isinstance(rows, list) else [rows])
+        return df
+
+    def get_fundo_detalhes(self, codigo: str) -> Dict[str, Any]:
+        """Retorna todos os dados cadastrais de um fundo/classe/subclasse específico."""
+        return self._get(f"{FUNDOS_BASE_PATH}/{codigo}")
+
+    def get_fundo_historico(self, codigo_fundo: str) -> Dict[str, Any]:
+        """Retorna o histórico completo de alterações cadastrais de um fundo."""
+        return self._get(f"{FUNDOS_BASE_PATH}/{codigo_fundo}/historico")
+
+    def get_serie_historica(self, codigo: str, **kwargs) -> pd.DataFrame:
+        """
+        Retorna a série histórica de PL e cota de uma classe ou subclasse.
+
+        kwargs:
+          data_inicio (str): data inicial no formato YYYY-MM-DD
+          data_fim    (str): data final no formato YYYY-MM-DD
+          data_atualizacao (str): filtra por data de atualização (YYYY-MM-DDTHH:MM:SS.SSS)
+        """
+        params: Dict[str, Any] = {}
+        if kwargs.get("data_inicio"):
+            params["data-inicio"] = kwargs["data_inicio"]
+        if kwargs.get("data_fim"):
+            params["data-fim"] = kwargs["data_fim"]
+        if kwargs.get("data_atualizacao"):
+            params["data-atualizacao"] = kwargs["data_atualizacao"]
+
+        raw = self._get(
+            f"{FUNDOS_BASE_PATH}/{codigo}/serie-historica",
+            params=params or None,
+        )
+        rows = raw.get("content", raw) if isinstance(raw, dict) else raw
+        return pd.DataFrame(rows if isinstance(rows, list) else [rows])
+
+    def get_instituicao_detalhes(self, cnpj: str) -> Dict[str, Any]:
+        """Retorna os detalhes de uma instituição pelo CNPJ."""
+        return self._get(f"{FUNDOS_BASE_PATH}/instituicoes/{cnpj}")
+
+    def get_segmento_investidor(self, codigo: str, **kwargs) -> Dict[str, Any]:
+        """
+        Retorna a distribuição percentual de PL por segmento do investidor.
+
+        kwargs:
+          mes_referencia (int): mês de referência (1-12)
+          ano_referencia (int): ano de referência
+        """
+        params: Dict[str, Any] = {}
+        if kwargs.get("mes_referencia") is not None:
+            params["mes-referencia"] = kwargs["mes_referencia"]
+        if kwargs.get("ano_referencia") is not None:
+            params["ano-referencia"] = kwargs["ano_referencia"]
+
+        return self._get(
+            f"{FUNDOS_BASE_PATH}/segmento-investidor/{codigo}/patrimonio-liquido",
+            params=params or None,
+        )
+
+    def get_notas_explicativas(self, codigo: str, **kwargs) -> pd.DataFrame:
+        """
+        Retorna as notas explicativas de uma classe ou subclasse.
+
+        kwargs:
+          page (int): página (default 0)
+          size (int): registros por página (default 1000)
+        """
+        params: Dict[str, Any] = {}
+        if kwargs.get("page") is not None:
+            params["page"] = kwargs["page"]
+        if kwargs.get("size") is not None:
+            params["size"] = kwargs["size"]
+
+        raw = self._get(
+            f"{FUNDOS_BASE_PATH}/{codigo}/notas-explicativas",
+            params=params or None,
+        )
+        rows = raw.get("content", raw) if isinstance(raw, dict) else raw
+        return pd.DataFrame(rows if isinstance(rows, list) else [rows])

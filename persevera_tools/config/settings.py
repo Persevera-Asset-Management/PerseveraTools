@@ -68,6 +68,10 @@ class Settings:
         # Optional overrides/flags
         self.XPWS_TOKEN_URL_OVERRIDE = os.getenv('PERSEVERA_XPWS_TOKEN_URL_OVERRIDE')
         self.XPWS_VERIFY_SSL = os.getenv('PERSEVERA_XPWS_VERIFY_SSL', 'true')
+        self.XPWS_USER_AGENT = os.getenv('PERSEVERA_XPWS_USER_AGENT')
+        self.XPWS_POSITIONS_V2_USE_LEGACY_PATH = os.getenv(
+            'PERSEVERA_XPWS_POSITIONS_V2_USE_LEGACY_PATH', 'false'
+        )
 
         # Load IBKR Web API (Trading OAuth 1.0a) configuration
         # See: PERSEVERA_IBKR_* environment variables
