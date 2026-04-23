@@ -62,7 +62,7 @@ class BloombergProvider(DataProvider):
             self.indicators_field_mappings = (
                 df_additional_fields[['Categoria', 'Name', 'Código']]
                 .groupby('Categoria')
-                .apply(lambda x: x.set_index('Name')['Código'].to_dict())
+                .apply(lambda x: x.set_index('Código')['Name'].to_dict())
                 .to_dict()
             )
         except Exception as e:
