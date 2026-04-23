@@ -179,13 +179,16 @@ class BloombergProvider(DataProvider):
                 raise ValueError(f"Unknown additional fields: '{additional_fields}'. "
                                  f"Available: {list(self.indicators_field_mappings.keys())}")
 
-            df = blp.bdh(
-                tickers=list(securities_list.keys()),
-                flds=list(field_list.keys()),
-                start_date=self.start_date,
-                BEST_FPERIOD_OVERRIDE=best_fperiod_override,
+            api_kwargs = {
+                'tickers': list(securities_list.keys()),
+                'flds': list(field_list.keys()),
+                'start_date': self.start_date,
                 **kwargs
-            )
+            }
+            if best_fperiod_override:
+                api_kwargs['BEST_FPERIOD_OVERRIDE'] = best_fperiod_override
+
+            df = blp.bdh(**api_kwargs)
             df = df.stack().stack().reset_index()
             df.columns = ['date', 'field', 'code_bloomberg', 'value']
             df['code'] = df['code_bloomberg'].map(securities_list)
