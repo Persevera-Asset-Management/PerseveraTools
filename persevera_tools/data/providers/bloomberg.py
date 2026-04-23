@@ -18,7 +18,7 @@ DataCategory = Literal[
     # Market data categories
     'Atividade Bancária', 'CFTC', 'Commodity', 'Comérico', 'Crédito', 'Dívida', 'Equity', 'Futuros', 'Governo', 'Inflação', 'Macro', 'Moedas', 'Monetário', 'Setor Externo', 'Taxas', 'Trabalho', 'Varejo', 'Índices',
     # Company data categories
-    'valuation', 'fundamentals', 'index_weight'
+    'Valuation', 'Breadth', 'Opções', 'index_weight'
 ]
 
 class BloombergProvider(DataProvider):
@@ -49,9 +49,26 @@ class BloombergProvider(DataProvider):
         super().__init__(start_date)
         self.tickers_mapping = tickers_mapping or {}
         self.fields_mapping = fields_mapping or {}
-        self._load_field_mappings()
+        self._load_company_field_mappings()
+        self._load_indicators_field_mappings()
         
-    def _load_field_mappings(self) -> None:
+    def _load_indicators_field_mappings(self) -> None:
+        """Load all indicators additional fields mappings from Fibery, grouped by category."""
+        try:
+            df_additional_fields = read_fibery(
+                table_name='Inv-Rsrch-Quant/Campos Adicionais de Indicadores',
+                include_fibery_fields=False
+            )
+            self.indicators_field_mappings = (
+                df_additional_fields[['Categoria', 'Name', 'Código']]
+                .groupby('Categoria')
+                .apply(lambda x: x.set_index('Name')['Código'].to_dict())
+                .to_dict()
+            )
+        except Exception as e:
+            raise DataRetrievalError(f"Failed to load indicators additional fields mappings: {str(e)}")
+
+    def _load_company_field_mappings(self) -> None:
         """Load field mappings from the configuration file."""
         try:
             base = read_sql(f"SELECT * FROM factor_zoo_equity_signals")
@@ -156,8 +173,11 @@ class BloombergProvider(DataProvider):
                 field_list = custom_fields
             elif additional_fields in self.fields_mapping:
                 field_list = self.fields_mapping[additional_fields]
+            elif additional_fields in self.indicators_field_mappings:
+                field_list = self.indicators_field_mappings[additional_fields]
             else:
-                raise ValueError(f"Unknown additional fields: {additional_fields}")
+                raise ValueError(f"Unknown additional fields: '{additional_fields}'. "
+                                 f"Available: {list(self.indicators_field_mappings.keys())}")
 
             df = blp.bdh(
                 tickers=list(securities_list.keys()),
