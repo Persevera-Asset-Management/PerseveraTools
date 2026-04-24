@@ -1,6 +1,5 @@
 import pandas as pd
 import numpy as np
-from dateutil.relativedelta import relativedelta
 
 
 def calculate_sqn(close_prices: pd.Series, period: int = 100) -> pd.Series:
@@ -29,7 +28,7 @@ def calculate_sqn(close_prices: pd.Series, period: int = 100) -> pd.Series:
 
     return sqn
 
-def get_sqn_categories(sqn: pd.Series) -> pd.Series:
+def calculate_sqn_categories(sqn: pd.Series) -> pd.Series:
     """
     Categorizes SQN values based on the TradingView script's color logic.
 
@@ -62,7 +61,7 @@ def get_sqn_categories(sqn: pd.Series) -> pd.Series:
     ]
     return pd.Series(np.select(conditions, categories, default=np.nan), index=sqn.index)
 
-def get_annualized_return(close_prices: pd.Series) -> float:
+def calculate_annualized_return(close_prices: pd.Series) -> float:
     """
     Computes the annualized return from a series of close prices.
 
@@ -78,7 +77,7 @@ def get_annualized_return(close_prices: pd.Series) -> float:
         return np.nan
     return float((1 + returns).prod() ** (252 / n) - 1)
 
-def get_consistency(close_prices: pd.Series, benchmark: pd.Series = None) -> float:
+def calculate_consistency(close_prices: pd.Series, benchmark: pd.Series = None) -> float:
     """
     Computes the fraction of months with positive returns.
 
@@ -97,12 +96,14 @@ def get_consistency(close_prices: pd.Series, benchmark: pd.Series = None) -> flo
         return np.nan
     if benchmark is not None:
         monthly_bm = benchmark.resample("ME").last().pct_change().dropna()
-        excess = monthly - monthly_bm
-        excess = excess.dropna()
-        return float((excess > 0).mean()) if len(excess) > 0 else np.nan
+        aligned = pd.concat([monthly, monthly_bm], axis=1, join='inner').dropna()
+        if len(aligned) == 0:
+            return np.nan
+        excess = aligned.iloc[:, 0] - aligned.iloc[:, 1]
+        return float((excess > 0).mean())
     return float((monthly > 0).mean())
 
-def get_annualized_volatility(close_prices: pd.Series, frequency: str = 'weekly') -> float:
+def calculate_annualized_volatility(close_prices: pd.Series, frequency: str = 'weekly') -> float:
     """
     Computes the annualized volatility from a series of close prices.
 
@@ -149,8 +150,8 @@ def calculate_sharpe_ratio(close_prices: pd.Series, risk_free_rate: float) -> fl
     Returns:
         Sharpe ratio as a float, or NaN if volatility is zero.
     """
-    vol = get_annualized_volatility(close_prices)
-    return (get_annualized_return(close_prices) - risk_free_rate) / vol if vol > 0 else np.nan
+    vol = calculate_annualized_volatility(close_prices, frequency='daily')
+    return (calculate_annualized_return(close_prices) - risk_free_rate) / vol if vol > 0 else np.nan
 
 def calculate_sortino_ratio(close_prices: pd.Series, risk_free_rate: float) -> float:
     """
@@ -174,7 +175,7 @@ def calculate_sortino_ratio(close_prices: pd.Series, risk_free_rate: float) -> f
     if len(neg) == 0:
         return np.nan
     dv = float(np.sqrt((neg ** 2).mean() * 252))
-    return (get_annualized_return(close_prices) - risk_free_rate) / dv if dv > 0 else np.nan
+    return (calculate_annualized_return(close_prices) - risk_free_rate) / dv if dv > 0 else np.nan
 
 def calculate_calmar_ratio(close_prices: pd.Series) -> float:
     """
@@ -187,28 +188,21 @@ def calculate_calmar_ratio(close_prices: pd.Series) -> float:
         Calmar ratio as a float, or NaN if max drawdown is zero.
     """
     mdd = calculate_max_drawdown(close_prices)
-    return -get_annualized_return(close_prices) / mdd if mdd < 0 else np.nan
+    return -calculate_annualized_return(close_prices) / mdd if mdd < 0 else np.nan
 
-def calculate_tracking_error(series_a: pd.Series, series_b: pd.Series, window: int = 252) -> float:
+def calculate_tracking_error(series_a: pd.Series, series_b: pd.Series, trading_days: int = 252) -> float:
     """
     Calculates the annualized tracking error between two price series.
 
     Args:
         series_a (pd.Series): The first price series.
         series_b (pd.Series): The second price series.
-        window (int): Number of trading days used for annualization. Defaults to 252.
+        trading_days (int): Number of trading days used for annualization. Defaults to 252.
 
     Returns:
         float: The annualized tracking error.
     """
-    # Align the series by index and remove any rows with missing values
     aligned_data = pd.concat([series_a, series_b], axis=1, join='inner')
-    
-    # Calculate returns on the aligned data after removing missing values
     returns = aligned_data.dropna().pct_change().dropna()
-    
-    # Calculate the difference in returns
     difference = returns.iloc[:, 0] - returns.iloc[:, 1]
-    
-    # Calculate the annualized standard deviation of the difference (Tracking Error)
-    return np.sqrt(window) * difference.std()
+    return np.sqrt(trading_days) * difference.std()
