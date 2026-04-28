@@ -73,6 +73,15 @@ class Settings:
             'PERSEVERA_XPWS_POSITIONS_V2_USE_LEGACY_PATH', 'false'
         )
 
+        # Load XP Hub Advisor Platform configuration
+        self.XPHUB_BEARER_TOKEN = os.getenv('PERSEVERA_XPHUB_BEARER_TOKEN')
+        self.XPHUB_SUBSCRIPTION_KEY = os.getenv('PERSEVERA_XPHUB_SUBSCRIPTION_KEY')
+        self.XPHUB_CUSTOMER_CODE = os.getenv('PERSEVERA_XPHUB_CUSTOMER_CODE')
+        self.XPHUB_BASE_URL = os.getenv('PERSEVERA_XPHUB_BASE_URL')
+        self.XPHUB_BRAND = os.getenv('PERSEVERA_XPHUB_BRAND')
+        self.XPHUB_SEGMENT_CHANNEL = os.getenv('PERSEVERA_XPHUB_SEGMENT_CHANNEL')
+        self.XPHUB_SEGMENT_CODE = os.getenv('PERSEVERA_XPHUB_SEGMENT_CODE')
+
         # Load IBKR Web API (Trading OAuth 1.0a) configuration
         # See: PERSEVERA_IBKR_* environment variables
         self.IBKR_BASE_URL = os.getenv('PERSEVERA_IBKR_BASE_URL')

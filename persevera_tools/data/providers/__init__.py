@@ -16,6 +16,7 @@ from .mdic import MDICProvider
 from .b3 import B3Provider
 from .anbima_feed import AnbimaFeedProvider, AnbimaFundosProvider
 from .ws_xp import XPWSProvider
+from .xp_hub import XPHubProvider
 # from .ws_ibkr import IBKRWebProvider
 
 
@@ -28,6 +29,6 @@ __all__ = [
     'AnbimaProvider', 'SimplifyProvider', 'CVMProvider', 'InvescoProvider',
     'ComdinheiroProvider', 'BcbFocusProvider', 'KraneSharesProvider', 'InvestingComProvider',
     'DebenturesComProvider', 'MDICProvider', 'B3Provider',
-    'AnbimaFeedProvider', 'AnbimaFundosProvider', 'XPWSProvider',
+    'AnbimaFeedProvider', 'AnbimaFundosProvider', 'XPWSProvider', 'XPHubProvider',
     #'IBKRWebProvider',
 ]

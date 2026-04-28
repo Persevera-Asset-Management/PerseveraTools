@@ -304,7 +304,6 @@ def _execute_fibery_page(
     logger.error(f"Failed to fix field selection after {max_field_retries} retries.")
     return None, field_selection
 
-
 def read_fibery(
     table_name: str,
     include_fibery_fields: bool = False,
@@ -412,10 +411,13 @@ def read_fibery(
             try:
                 df[col] = pd.to_numeric(df[col])
                 continue
-            except ValueError:
+            except (ValueError, TypeError):
                 pass
 
-            unique_vals = df[col].dropna().unique()
+            try:
+                unique_vals = df[col].dropna().unique()
+            except TypeError:
+                continue
             if len(unique_vals) > 0 and all(v in ["true", "false"] for v in unique_vals):
                 df[col] = df[col].map({"true": True, "false": False})
 
