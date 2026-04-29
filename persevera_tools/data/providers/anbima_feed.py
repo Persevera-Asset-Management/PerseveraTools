@@ -360,9 +360,13 @@ class AnbimaFeedProvider(DataProvider):
                             + " | Confira: use credenciais de produção (sem SANDBOX) para "
                             "api.anbima.com.br; credenciais de sandbox para api-sandbox.anbima.com.br."
                         )
+                        logger.error("ANBIMA Feed API error %s: %s", status, msg)
+                    elif status == 404:
+                        # 404 é condição normal de fim de paginação; log em DEBUG
+                        logger.debug("ANBIMA Feed API 404 em %s: %s", url, e.response.text[:200])
                     else:
                         msg = e.response.text[:500]
-                    logger.error("ANBIMA Feed API error %s: %s", status, msg)
+                        logger.error("ANBIMA Feed API error %s: %s", status, msg)
                 raise DataRetrievalError(f"ANBIMA Feed API request failed: {e}") from e
             except requests.exceptions.RequestException as e:
                 logger.error("ANBIMA Feed request failed: %s", e)
@@ -579,7 +583,15 @@ class AnbimaFundosProvider(AnbimaFeedProvider):
 
         while True:
             list_params["page"] = page
-            raw = self._get(FUNDOS_BASE_PATH, params=list_params)
+            try:
+                raw = self._get(FUNDOS_BASE_PATH, params=list_params)
+            except DataRetrievalError as e:
+                if "404" in str(e):
+                    logger.debug(
+                        "cnpj_to_codigo_fundo: página %d retornou 404 — fim da listagem.", page
+                    )
+                    break
+                raise
             rows: List[Dict] = []
             if isinstance(raw, dict):
                 rows = raw.get("content", raw) if isinstance(raw.get("content"), list) else []
@@ -884,7 +896,15 @@ class AnbimaFundosProvider(AnbimaFeedProvider):
         t0 = time.time()
         while True:
             list_params["page"] = page
-            raw = self._get(FUNDOS_BASE_PATH, params=list_params)
+            try:
+                raw = self._get(FUNDOS_BASE_PATH, params=list_params)
+            except DataRetrievalError as e:
+                if "404" in str(e):
+                    logger.debug(
+                        "pre_load_cnpj_cache: página %d retornou 404 — fim da listagem.", page
+                    )
+                    break
+                raise
             rows: List[Dict] = []
             if isinstance(raw, dict):
                 rows = raw.get("content", raw) if isinstance(raw.get("content"), list) else []
