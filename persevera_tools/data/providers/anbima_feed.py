@@ -13,6 +13,7 @@ Covers two API families:
 """
 
 import base64
+import re
 import time
 from typing import Any, Dict, List, Optional
 
@@ -321,34 +322,54 @@ class AnbimaFeedProvider(DataProvider):
             "Authorization": f"Bearer {token}",
         }
 
+    _RETRY_STATUS_CODES = {502, 503, 504}
+    _MAX_RETRIES = 3
+    _RETRY_BACKOFF = 2.0  # segundos; multiplicado por 2^tentativa
+
     def _get(self, path: str, params: Optional[Dict[str, Any]] = None) -> Any:
         url = f"{self._base_url}{path}"
-        try:
-            resp = requests.get(
-                url,
-                headers=self._auth_headers(),
-                params=params,
-                timeout=60,
-            )
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.HTTPError as e:
-            if e.response is not None:
-                if e.response.status_code == 401:
-                    self._access_token = None
-                    self._token_expires_at = 0.0
-                    msg = (
-                        e.response.text[:500]
-                        + " | Confira: use credenciais de produção (sem SANDBOX) para "
-                        "api.anbima.com.br; credenciais de sandbox para api-sandbox.anbima.com.br."
+        last_exc: Optional[Exception] = None
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                resp = requests.get(
+                    url,
+                    headers=self._auth_headers(),
+                    params=params,
+                    timeout=60,
+                )
+                resp.raise_for_status()
+                return resp.json()
+            except requests.exceptions.HTTPError as e:
+                status = e.response.status_code if e.response is not None else None
+                if status in self._RETRY_STATUS_CODES and attempt < self._MAX_RETRIES - 1:
+                    wait = self._RETRY_BACKOFF * (2 ** attempt)
+                    logger.warning(
+                        "ANBIMA Feed HTTP %s em %s (tentativa %d/%d); "
+                        "aguardando %.0fs antes de tentar novamente.",
+                        status, url, attempt + 1, self._MAX_RETRIES, wait,
                     )
-                else:
-                    msg = e.response.text[:500]
-                logger.error("ANBIMA Feed API error %s: %s", e.response.status_code, msg)
-            raise DataRetrievalError(f"ANBIMA Feed API request failed: {e}") from e
-        except requests.exceptions.RequestException as e:
-            logger.error("ANBIMA Feed request failed: %s", e)
-            raise DataRetrievalError(f"ANBIMA Feed request failed: {e}") from e
+                    time.sleep(wait)
+                    last_exc = e
+                    continue
+                if e.response is not None:
+                    if status == 401:
+                        self._access_token = None
+                        self._token_expires_at = 0.0
+                        msg = (
+                            e.response.text[:500]
+                            + " | Confira: use credenciais de produção (sem SANDBOX) para "
+                            "api.anbima.com.br; credenciais de sandbox para api-sandbox.anbima.com.br."
+                        )
+                    else:
+                        msg = e.response.text[:500]
+                    logger.error("ANBIMA Feed API error %s: %s", status, msg)
+                raise DataRetrievalError(f"ANBIMA Feed API request failed: {e}") from e
+            except requests.exceptions.RequestException as e:
+                logger.error("ANBIMA Feed request failed: %s", e)
+                raise DataRetrievalError(f"ANBIMA Feed request failed: {e}") from e
+        raise DataRetrievalError(
+            f"ANBIMA Feed API request failed após {self._MAX_RETRIES} tentativas: {last_exc}"
+        ) from last_exc
 
     def _json_to_long(
         self,
@@ -471,6 +492,10 @@ class AnbimaFundosProvider(AnbimaFeedProvider):
 
     Reutiliza a autenticação OAuth2 de AnbimaFeedProvider.
 
+    Todos os métodos que aceitam ``codigo`` também aceitam CNPJ (formatado ou apenas
+    dígitos). A resolução CNPJ → código ANBIMA é feita automaticamente via
+    ``anbima_fundos_lista`` e é cacheada na instância.
+
     Categorias disponíveis em get_data():
       - anbima_fundos_lista                  : lista de fundos
           kwargs: page, size, tipo_fundo
@@ -481,17 +506,157 @@ class AnbimaFundosProvider(AnbimaFeedProvider):
       - anbima_fundos_lote_serie_historica   : lote com série histórica (PL & cota) de todos os fundos
           kwargs: data_atualizacao (obrigatório), tipo_fundo, size, cursor
 
-    Métodos para endpoints com parâmetro de caminho:
-      - get_fundo_detalhes(codigo)           : detalhes completos de um fundo/classe/subclasse
-      - get_fundo_historico(codigo_fundo)    : histórico de alterações cadastrais de um fundo
-      - get_serie_historica(codigo, **kwargs): série histórica PL & cota de uma classe/subclasse
+    Métodos para endpoints com parâmetro de caminho (aceitam código ANBIMA **ou CNPJ**):
+      - get_fundo_detalhes(codigo_ou_cnpj)           : detalhes completos de um fundo/classe/subclasse
+      - get_fundo_historico(codigo_ou_cnpj)           : histórico de alterações cadastrais de um fundo
+      - get_serie_historica(codigo_ou_cnpj, **kwargs) : série histórica PL & cota de uma classe/subclasse
           kwargs: data_inicio, data_fim, data_atualizacao
-      - get_instituicao_detalhes(cnpj)       : detalhes de uma instituição
-      - get_segmento_investidor(codigo, **kwargs): PL por segmento do investidor
+      - get_instituicao_detalhes(cnpj)                : detalhes de uma instituição
+      - get_segmento_investidor(codigo_ou_cnpj, **kwargs): PL por segmento do investidor
           kwargs: mes_referencia, ano_referencia
-      - get_notas_explicativas(codigo, **kwargs): notas explicativas de uma classe/subclasse
+      - get_notas_explicativas(codigo_ou_cnpj, **kwargs): notas explicativas de uma classe/subclasse
           kwargs: page, size
+
+    Resolução de CNPJ:
+      - cnpj_to_codigo_fundo(cnpj) → código F (fundo)
+      - Para métodos que precisam de código de classe (C/S), a primeira classe ativa
+        é resolvida automaticamente via get_fundo_detalhes.
     """
+
+    def __init__(self, start_date: str = "1980-01-01", sandbox: Optional[bool] = None):
+        super().__init__(start_date=start_date, sandbox=sandbox)
+        # CNPJ (14 dígitos sem formatação) → codigo_fundo (prefixo F)
+        self._cnpj_fundo_cache: Dict[str, str] = {}
+        # codigo_fundo (F) → CNPJ formatado (cache reverso)
+        self._fundo_cnpj_cache: Dict[str, str] = {}
+        # codigo_fundo (F) → primeiro codigo_classe (C)
+        self._fundo_classe_cache: Dict[str, str] = {}
+
+    # ------------------------------------------------------------------ #
+    # CNPJ helpers                                                         #
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _normalize_cnpj(cnpj: str) -> str:
+        """Remove formatação do CNPJ e retorna apenas os 14 dígitos."""
+        return re.sub(r"[.\-/\s]", "", cnpj).strip()
+
+    @staticmethod
+    def _is_cnpj(value: str) -> bool:
+        """Retorna True se o valor parece um CNPJ (14 dígitos, com ou sem formatação)."""
+        digits = re.sub(r"[.\-/\s]", "", value).strip()
+        return digits.isdigit() and len(digits) == 14
+
+    def cnpj_to_codigo_fundo(self, cnpj: str, tipo_fundo: Optional[str] = None) -> str:
+        """
+        Resolve um CNPJ para o código ANBIMA do fundo (prefixo F).
+
+        Faz paginação automática em ``anbima_fundos_lista`` até encontrar o CNPJ.
+        Os resultados são cacheados na instância (válido enquanto o objeto existir).
+
+        Args:
+            cnpj: CNPJ do fundo (formatado ou apenas 14 dígitos).
+            tipo_fundo: Filtra a busca por tipo de fundo (``"FIF"``, ``"FII"``,
+                ``"FIP"``, ``"FIDC"``, ``"FIAGRO"``, ``"ETF"``, ``"OFFSHORE"``).
+                Reduz significativamente o número de páginas varridas quando
+                o tipo é conhecido.
+
+        Returns:
+            Código do fundo no formato ``F0000000191``.
+
+        Raises:
+            DataRetrievalError: Se o CNPJ não for encontrado na listagem.
+        """
+        normalized = self._normalize_cnpj(cnpj)
+        if normalized in self._cnpj_fundo_cache:
+            return self._cnpj_fundo_cache[normalized]
+
+        page = 0
+        size = 1000
+        list_params: Dict[str, Any] = {"size": size}
+        if tipo_fundo:
+            list_params["tipo-fundo"] = tipo_fundo
+
+        while True:
+            list_params["page"] = page
+            raw = self._get(FUNDOS_BASE_PATH, params=list_params)
+            rows: List[Dict] = []
+            if isinstance(raw, dict):
+                rows = raw.get("content", raw) if isinstance(raw.get("content"), list) else []
+            elif isinstance(raw, list):
+                rows = raw
+
+            for item in rows:
+                cnpj_value = str(item.get("identificador_fundo", ""))
+                fund_code = str(item.get("codigo_fundo", ""))
+                if cnpj_value and fund_code:
+                    self._cnpj_fundo_cache[self._normalize_cnpj(cnpj_value)] = fund_code
+                    self._fundo_cnpj_cache[fund_code] = cnpj_value
+
+            if normalized in self._cnpj_fundo_cache:
+                return self._cnpj_fundo_cache[normalized]
+
+            if not rows or len(rows) < size:
+                break
+            page += 1
+            logger.debug("cnpj_to_codigo_fundo: varrendo página %d (CNPJ ainda não encontrado).", page)
+
+        raise DataRetrievalError(
+            f"CNPJ {cnpj} não encontrado na listagem de fundos ANBIMA"
+            + (f" (tipo_fundo={tipo_fundo!r})" if tipo_fundo else "")
+            + ". Verifique o CNPJ ou informe tipo_fundo= para restringir a busca."
+        )
+
+    def _get_first_classe_codigo(self, codigo_fundo: str) -> str:
+        """
+        Retorna o código da primeira classe (prefixo C) de um fundo.
+
+        Faz cache por codigo_fundo na instância.
+        """
+        if codigo_fundo in self._fundo_classe_cache:
+            return self._fundo_classe_cache[codigo_fundo]
+
+        details = self.get_fundo_detalhes(codigo_fundo)
+        classes = details.get("classes", [])
+        if not classes:
+            raise DataRetrievalError(
+                f"Nenhuma classe encontrada para o fundo {codigo_fundo}."
+            )
+        classe_codigo = classes[0].get("codigo_classe") if isinstance(classes[0], dict) else None
+        if not classe_codigo:
+            raise DataRetrievalError(
+                f"Não foi possível extrair o código de classe para o fundo {codigo_fundo}."
+            )
+        self._fundo_classe_cache[codigo_fundo] = classe_codigo
+        return classe_codigo
+
+    def _resolve_fundo_codigo(self, value: str, tipo_fundo: Optional[str] = None) -> str:
+        """
+        Resolve para um código de fundo/classe/subclasse.
+        Se o valor for CNPJ, resolve via ``cnpj_to_codigo_fundo``.
+        """
+        if self._is_cnpj(value):
+            return self.cnpj_to_codigo_fundo(value, tipo_fundo=tipo_fundo)
+        return value
+
+    def _resolve_classe_codigo(self, value: str, tipo_fundo: Optional[str] = None) -> str:
+        """
+        Resolve para um código de **classe ou subclasse** (prefixo C ou S).
+
+        - C/S → retorna como está.
+        - F (código de fundo) → retorna o código da primeira classe.
+        - CNPJ → resolve para F, depois para a primeira classe.
+        """
+        if self._is_cnpj(value):
+            codigo_fundo = self.cnpj_to_codigo_fundo(value, tipo_fundo=tipo_fundo)
+            return self._get_first_classe_codigo(codigo_fundo)
+        if value.upper().startswith("F"):
+            return self._get_first_classe_codigo(value)
+        return value
+
+    # ------------------------------------------------------------------ #
+    # get_data (list/bulk endpoints)                                       #
+    # ------------------------------------------------------------------ #
 
     def get_data(self, category: str, **kwargs) -> pd.DataFrame:
         self._ensure_credentials()
@@ -526,50 +691,236 @@ class AnbimaFundosProvider(AnbimaFeedProvider):
         df = pd.DataFrame(rows if isinstance(rows, list) else [rows])
         return df
 
-    def get_fundo_detalhes(self, codigo: str) -> Dict[str, Any]:
-        """Retorna todos os dados cadastrais de um fundo/classe/subclasse específico."""
+    # ------------------------------------------------------------------ #
+    # Per-fund endpoints (aceitam código ANBIMA ou CNPJ)                  #
+    # ------------------------------------------------------------------ #
+
+    def get_fundo_detalhes(
+        self, codigo_ou_cnpj: str, tipo_fundo: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Retorna todos os dados cadastrais de um fundo/classe/subclasse específico.
+
+        Args:
+            codigo_ou_cnpj: Código ANBIMA (F…, C…, S…) **ou CNPJ** do fundo.
+            tipo_fundo: Tipo do fundo (``"FIF"``, ``"FII"``, etc.) usado para
+                restringir a busca por CNPJ e reduzir o número de páginas varridas.
+        """
+        codigo = self._resolve_fundo_codigo(codigo_ou_cnpj, tipo_fundo=tipo_fundo)
         return self._get(f"{FUNDOS_BASE_PATH}/{codigo}")
 
-    def get_fundo_historico(self, codigo_fundo: str) -> Dict[str, Any]:
-        """Retorna o histórico completo de alterações cadastrais de um fundo."""
-        return self._get(f"{FUNDOS_BASE_PATH}/{codigo_fundo}/historico")
+    def get_fundo_historico(
+        self, codigo_ou_cnpj: str, tipo_fundo: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Retorna o histórico completo de alterações cadastrais de um fundo.
 
-    def get_serie_historica(self, codigo: str, **kwargs) -> pd.DataFrame:
+        Args:
+            codigo_ou_cnpj: Código ANBIMA do fundo (F…) **ou CNPJ**.
+            tipo_fundo: Tipo do fundo usado para restringir a busca por CNPJ.
+        """
+        codigo = self._resolve_fundo_codigo(codigo_ou_cnpj, tipo_fundo=tipo_fundo)
+        return self._get(f"{FUNDOS_BASE_PATH}/{codigo}/historico")
+
+    _SERIE_HISTORICA_PAGE_SIZE = 1000  # limite hard da API por requisição
+
+    def get_serie_historica(self, codigo_ou_cnpj: str, **kwargs) -> pd.DataFrame:
         """
         Retorna a série histórica de PL e cota de uma classe ou subclasse.
 
-        kwargs:
-          data_inicio (str): data inicial no formato YYYY-MM-DD
-          data_fim    (str): data final no formato YYYY-MM-DD
-          data_atualizacao (str): filtra por data de atualização (YYYY-MM-DDTHH:MM:SS.SSS)
-        """
-        params: Dict[str, Any] = {}
-        if kwargs.get("data_inicio"):
-            params["data-inicio"] = kwargs["data_inicio"]
-        if kwargs.get("data_fim"):
-            params["data-fim"] = kwargs["data_fim"]
-        if kwargs.get("data_atualizacao"):
-            params["data-atualizacao"] = kwargs["data_atualizacao"]
+        A API devolve no máximo 1 000 registros por requisição. Este método faz
+        paginação automática por intervalo de datas: quando uma página cheia é
+        recebida, a próxima requisição começa no dia seguinte ao último
+        ``data_competencia`` retornado, repetindo até o fim do período.
 
-        raw = self._get(
-            f"{FUNDOS_BASE_PATH}/{codigo}/serie-historica",
-            params=params or None,
+        Se um CNPJ ou código de fundo (F…) for passado, o código da primeira
+        classe é resolvido automaticamente.
+
+        Args:
+            codigo_ou_cnpj: Código de classe/subclasse (C…/S…), código de fundo
+                (F…) **ou CNPJ** do fundo.
+
+        kwargs:
+          data_inicio (str)      : data inicial no formato YYYY-MM-DD
+          data_fim    (str)      : data final no formato YYYY-MM-DD
+          data_atualizacao (str) : filtra por data de atualização
+                                   (YYYY-MM-DDTHH:MM:SS.SSS)
+          tipo_fundo (str)       : tipo do fundo (``"FIF"``, ``"FII"``, etc.)
+                                   usado para restringir a busca por CNPJ
+        """
+        codigo = self._resolve_classe_codigo(
+            codigo_ou_cnpj, tipo_fundo=kwargs.get("tipo_fundo")
         )
-        rows = raw.get("content", raw) if isinstance(raw, dict) else raw
-        return pd.DataFrame(rows if isinstance(rows, list) else [rows])
+        data_inicio = kwargs.get("data_inicio")
+        data_atualizacao = kwargs.get("data_atualizacao")
+
+        # A API retorna em ordem decrescente (mais recente primeiro).
+        # Paginamos recuando data_fim para o dia anterior ao mínimo de cada página.
+        current_fim: Optional[str] = kwargs.get("data_fim")
+        pages: List[pd.DataFrame] = []
+
+        while True:
+            params: Dict[str, Any] = {}
+            if data_inicio:
+                params["data-inicio"] = data_inicio
+            if current_fim:
+                params["data-fim"] = current_fim
+            if data_atualizacao:
+                params["data-atualizacao"] = data_atualizacao
+
+            raw = self._get(
+                f"{FUNDOS_BASE_PATH}/{codigo}/serie-historica",
+                params=params or None,
+            )
+            rows = raw.get("content", raw) if isinstance(raw, dict) else raw
+            df_page = pd.DataFrame(rows if isinstance(rows, list) else [rows])
+
+            if df_page.empty:
+                break
+
+            pages.append(df_page)
+
+            # Se recebemos menos que o limite, não há mais páginas
+            if len(df_page) < self._SERIE_HISTORICA_PAGE_SIZE:
+                break
+
+            # Identifica a coluna de data para recuar a janela
+            date_col = next(
+                (c for c in ("data_competencia", "data_referencia") if c in df_page.columns),
+                None,
+            )
+            if date_col is None:
+                logger.warning(
+                    "get_serie_historica: coluna de data não encontrada na resposta; "
+                    "paginação automática interrompida após %d registros.",
+                    sum(len(f) for f in pages),
+                )
+                break
+
+            min_date = pd.to_datetime(df_page[date_col], errors="coerce").min()
+            if pd.isna(min_date):
+                break
+
+            # Próxima janela: termina no dia anterior ao mínimo desta página
+            next_fim = (min_date - pd.Timedelta(days=1)).strftime("%Y-%m-%d")
+
+            # Guarda de segurança: para se já chegamos antes do data_inicio
+            if data_inicio and next_fim < data_inicio:
+                break
+            # Evita loop infinito se a data não recuar
+            if current_fim and next_fim >= current_fim:
+                break
+
+            logger.debug(
+                "get_serie_historica: página com %d registros (até %s); "
+                "continuando até %s.",
+                len(df_page),
+                min_date.strftime("%Y-%m-%d"),
+                next_fim,
+            )
+            current_fim = next_fim
+
+        if not pages:
+            return pd.DataFrame()
+
+        result = pd.concat(pages, ignore_index=True).drop_duplicates()
+
+        # Insere coluna cnpj_fundo
+        cnpj_fundo: Optional[str] = None
+        if self._is_cnpj(codigo_ou_cnpj):
+            cnpj_fundo = codigo_ou_cnpj
+        else:
+            # Tenta resolver via cache reverso usando o codigo_fundo da resposta
+            codigo_fundo_resp = (
+                result["codigo_fundo"].iloc[0]
+                if "codigo_fundo" in result.columns and not result.empty
+                else None
+            )
+            if codigo_fundo_resp and codigo_fundo_resp in self._fundo_cnpj_cache:
+                cnpj_fundo = self._fundo_cnpj_cache[codigo_fundo_resp]
+            elif codigo_fundo_resp:
+                # Busca nos detalhes do fundo (uma chamada extra, resultado é cacheado)
+                try:
+                    details = self.get_fundo_detalhes(codigo_fundo_resp)
+                    cnpj_fundo = details.get("identificador_fundo")
+                    if cnpj_fundo:
+                        self._fundo_cnpj_cache[codigo_fundo_resp] = cnpj_fundo
+                except DataRetrievalError:
+                    pass
+
+        if cnpj_fundo is not None:
+            result.insert(0, "cnpj_fundo", cnpj_fundo)
+
+        return result
+
+    def get_series_historicas(
+        self,
+        codigos_ou_cnpjs: List[str],
+        **kwargs,
+    ) -> pd.DataFrame:
+        """
+        Retorna a série histórica de PL e cota para **múltiplos fundos** em um
+        único DataFrame, com paginação automática por fundo.
+
+        Internamente chama :meth:`get_serie_historica` para cada item da lista,
+        acumulando os resultados. Os caches de CNPJ são compartilhados entre as
+        chamadas, então fundos do mesmo tipo não requerem re-varrimento da lista.
+
+        Args:
+            codigos_ou_cnpjs: Lista de CNPJs (formatados ou 14 dígitos) e/ou
+                códigos ANBIMA (F…, C…, S…).
+
+        kwargs: Mesmos parâmetros de :meth:`get_serie_historica`:
+          data_inicio (str)      : data inicial no formato YYYY-MM-DD
+          data_fim    (str)      : data final no formato YYYY-MM-DD
+          data_atualizacao (str) : filtra por data de atualização
+          tipo_fundo (str)       : tipo do fundo para restringir busca por CNPJ
+
+        Returns:
+            DataFrame concatenado com coluna ``cnpj_fundo`` e todos os registros
+            de todos os fundos solicitados.
+        """
+        frames: List[pd.DataFrame] = []
+        total = len(codigos_ou_cnpjs)
+        for i, codigo_ou_cnpj in enumerate(codigos_ou_cnpjs, 1):
+            logger.info(
+                "get_series_historicas: processando %d/%d – %s",
+                i, total, codigo_ou_cnpj,
+            )
+            try:
+                df = self.get_serie_historica(codigo_ou_cnpj, **kwargs)
+                if not df.empty:
+                    frames.append(df)
+            except DataRetrievalError as exc:
+                logger.error(
+                    "get_series_historicas: erro ao buscar %s – %s", codigo_ou_cnpj, exc
+                )
+
+        if not frames:
+            return pd.DataFrame()
+
+        return pd.concat(frames, ignore_index=True)
 
     def get_instituicao_detalhes(self, cnpj: str) -> Dict[str, Any]:
         """Retorna os detalhes de uma instituição pelo CNPJ."""
         return self._get(f"{FUNDOS_BASE_PATH}/instituicoes/{cnpj}")
 
-    def get_segmento_investidor(self, codigo: str, **kwargs) -> Dict[str, Any]:
+    def get_segmento_investidor(self, codigo_ou_cnpj: str, **kwargs) -> Dict[str, Any]:
         """
         Retorna a distribuição percentual de PL por segmento do investidor.
+
+        Args:
+            codigo_ou_cnpj: Código de classe/subclasse (C…/S…), código de fundo (F…)
+                **ou CNPJ** do fundo.
 
         kwargs:
           mes_referencia (int): mês de referência (1-12)
           ano_referencia (int): ano de referência
+          tipo_fundo (str)    : tipo do fundo usado para restringir a busca por CNPJ
         """
+        codigo = self._resolve_classe_codigo(
+            codigo_ou_cnpj, tipo_fundo=kwargs.get("tipo_fundo")
+        )
         params: Dict[str, Any] = {}
         if kwargs.get("mes_referencia") is not None:
             params["mes-referencia"] = kwargs["mes_referencia"]
@@ -581,14 +932,22 @@ class AnbimaFundosProvider(AnbimaFeedProvider):
             params=params or None,
         )
 
-    def get_notas_explicativas(self, codigo: str, **kwargs) -> pd.DataFrame:
+    def get_notas_explicativas(self, codigo_ou_cnpj: str, **kwargs) -> pd.DataFrame:
         """
         Retorna as notas explicativas de uma classe ou subclasse.
 
+        Args:
+            codigo_ou_cnpj: Código de classe/subclasse (C…/S…), código de fundo (F…)
+                **ou CNPJ** do fundo.
+
         kwargs:
-          page (int): página (default 0)
-          size (int): registros por página (default 1000)
+          page (int)       : página (default 0)
+          size (int)       : registros por página (default 1000)
+          tipo_fundo (str) : tipo do fundo usado para restringir a busca por CNPJ
         """
+        codigo = self._resolve_classe_codigo(
+            codigo_ou_cnpj, tipo_fundo=kwargs.get("tipo_fundo")
+        )
         params: Dict[str, Any] = {}
         if kwargs.get("page") is not None:
             params["page"] = kwargs["page"]

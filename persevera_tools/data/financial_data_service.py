@@ -7,6 +7,7 @@ from .providers.sgs import SGSProvider
 from .providers.fred import FredProvider
 from .providers.sidra import SidraProvider
 from .providers.anbima import AnbimaProvider
+from .providers.anbima_feed import AnbimaFeedProvider, AnbimaFundosProvider
 from .providers.cvm import CVMProvider
 from .providers.bcb_focus import BcbFocusProvider
 from .providers.simplify import SimplifyProvider
@@ -41,6 +42,7 @@ class FinancialDataService:
             bloomberg_tickers_mapping: Optional custom mapping of Bloomberg tickers to internal codes
             bloomberg_fields_mapping: Optional custom mapping of Bloomberg fields to internal fields
         """
+        self.start_date = start_date
         self.bloomberg = BloombergProvider(
             start_date=start_date,
             tickers_mapping=bloomberg_tickers_mapping,
@@ -50,6 +52,8 @@ class FinancialDataService:
         self.fred = FredProvider(start_date=start_date)
         self.sidra = SidraProvider(start_date=start_date)
         self.anbima = AnbimaProvider(start_date=start_date)
+        self.anbima_feed = AnbimaFeedProvider(start_date=start_date)
+        self.anbima_fundos = AnbimaFundosProvider(start_date=start_date)
         self.cvm = CVMProvider(start_date=start_date)
         self.bcb_focus = BcbFocusProvider(start_date=start_date)
         self.simplify = SimplifyProvider(start_date=start_date)
@@ -201,6 +205,97 @@ class FinancialDataService:
         self.logger.error(error_msg)
         raise RuntimeError(error_msg)
 
+    def get_anbima_fundos_serie_historica(
+        self,
+        cnpjs: List[str],
+        tipo_fundo: Optional[str] = None,
+        save_to_db: bool = True,
+        retry_attempts: int = 3,
+        table_name: str = 'fundos_cvm',
+    ) -> pd.DataFrame:
+        """
+        Retrieve historical NAV and AUM time series from ANBIMA Fundos v2 API
+        for one or more funds identified by CNPJ.
+
+        The date range starts at ``start_date`` (set at service initialisation)
+        and extends to the most recent available data. Automatic date-range
+        pagination is handled internally — there is no practical limit on the
+        number of records returned.
+
+        Args:
+            cnpjs: List of fund CNPJs (formatted as ``"XX.XXX.XXX/XXXX-XX"``
+                or 14 raw digits). ANBIMA fund/class/subclass codes (F…/C…/S…)
+                are also accepted.
+            tipo_fundo: Fund type filter (``"FIF"``, ``"FII"``, ``"FIP"``,
+                ``"FIDC"``, ``"FIAGRO"``, ``"ETF"``, ``"OFFSHORE"``).
+                When supplied, significantly reduces the number of pages
+                scanned to resolve each CNPJ.
+            save_to_db: Whether to upsert the result into the database.
+            retry_attempts: Number of retry attempts on failure.
+            table_name: Target database table name.
+
+        Returns:
+            DataFrame with columns including ``cnpj_fundo``,
+            ``codigo_fundo``, ``codigo_classe``, ``data_competencia``,
+            ``valor_cota``, ``patrimonio_liquido``, and others returned
+            by the ANBIMA API.
+        """
+        self.logger.info(
+            "Retrieving ANBIMA Fundos series for %d CNPJ(s)%s",
+            len(cnpjs),
+            f" from {self.start_date}" if self.start_date else "",
+        )
+
+        kwargs: Dict[str, Any] = {"data_inicio": self.start_date}
+        if tipo_fundo:
+            kwargs["tipo_fundo"] = tipo_fundo
+
+        attempt = 0
+        last_error = None
+
+        while attempt < retry_attempts:
+            try:
+                df = self.anbima_fundos.get_series_historicas(cnpjs, **kwargs)
+                cols = {
+                    'cnpj_fundo': 'fund_cnpj',
+                    'data_competencia': 'date',
+                    'valor_cota': 'fund_nav',
+                    'valor_patrimonio_liquido': 'fund_total_equity',
+                    'valor_volume_total_aplicacoes': 'fund_inflows',
+                    'valor_volume_total_resgates': 'fund_outflows',
+                    'numero_cotistas': 'fund_holders',
+                }
+                df = df[list(cols.keys())]
+                df = df.rename(columns=cols)
+
+                if df.empty:
+                    self.logger.warning("No data retrieved from ANBIMA Fundos")
+                    return df
+
+                if save_to_db:
+                    self.logger.info("Saving %d rows to '%s'", len(df), table_name)
+                    try:
+                        df = self._save_to_db(df, table_name, ['fund_cnpj', 'date'])
+                    except Exception as e:
+                        self.logger.error("Failed to save ANBIMA Fundos data: %s", e)
+                        raise
+
+                return df
+
+            except Exception as e:
+                attempt += 1
+                last_error = e
+                self.logger.warning("Attempt %d failed: %s", attempt, e)
+                if attempt < retry_attempts:
+                    self.logger.info("Retrying… (%d/%d)", attempt, retry_attempts)
+
+        error_msg = (
+            f"Failed to retrieve ANBIMA Fundos data after {retry_attempts} attempts. "
+            f"Last error: {last_error}"
+        )
+        self.logger.error(error_msg)
+        raise RuntimeError(error_msg)
+
     def get_investing_calendar_data(
         self,
         save_to_db: bool = False,
@@ -254,7 +349,20 @@ class FinancialDataService:
 
     def get_data(
         self,
-        source: Literal['sgs', 'fred', 'sidra', 'debentures_com', 'anbima_indices', 'anbima_debentures', 'anbima_titulos_publicos', 'anbima_cri_cra', 'simplify', 'invesco', 'bcb_focus', 'kraneshares', 'mdic', 'b3_investor_flow', 'b3_bdi', 'mais_retorno_debentures', 'mais_retorno_fundos'],
+        source: Literal[
+            'sgs', 'fred', 'sidra', 'debentures_com',
+            'anbima_indices', 'anbima_debentures', 'anbima_titulos_publicos', 'anbima_cri_cra',
+            'anbima_feed_titulos_publicos_mercado_secundario', 'anbima_feed_titulos_publicos_vna',
+            'anbima_feed_titulos_publicos_curvas_juros', 'anbima_feed_debentures_mercado_secundario',
+            'anbima_feed_debentures_curvas_credito', 'anbima_feed_cri_cra_mercado_secundario',
+            'anbima_feed_fidc_mercado_secundario', 'anbima_feed_indices_resultados_ihfa_fechado',
+            'anbima_feed_indices_resultados_ima', 'anbima_feed_indices_resultados_idka',
+            'anbima_fundos_lista', 'anbima_fundos_instituicoes',
+            'anbima_fundos_lote_dados_cadastrais', 'anbima_fundos_lote_serie_historica',
+            'simplify', 'invesco', 'bcb_focus', 'kraneshares', 'mdic',
+            'b3_investor_flow', 'b3_bdi',
+            'mais_retorno_debentures', 'mais_retorno_fundos',
+        ],
         save_to_db: bool = True,
         retry_attempts: int = 3,
         table_name: Optional[str] = None,
@@ -263,20 +371,24 @@ class FinancialDataService:
     ) -> pd.DataFrame:
         """
         Retrieve data from various sources.
-        
+
+        For ANBIMA Fundos time series by CNPJ, prefer
+        :meth:`get_anbima_fundos_serie_historica` which handles automatic
+        pagination and CNPJ resolution.
+
         Args:
-            source: The data source to use
-            save_to_db: Whether to save the data to the database
-            retry_attempts: Number of retry attempts
-            table_name: Optional custom table name for database storage
-            primary_keys: Optional list of primary keys for the database table
-            **kwargs: Additional arguments passed to the specific provider
-            
+            source: The data source to use.
+            save_to_db: Whether to save the data to the database.
+            retry_attempts: Number of retry attempts.
+            table_name: Optional custom table name for database storage.
+            primary_keys: Optional list of primary keys for the database table.
+            **kwargs: Additional arguments passed to the specific provider.
+
         Returns:
-            DataFrame with columns: ['date', 'code', 'field', 'value']
+            DataFrame with the data returned by the provider.
         """
         self.logger.info(f"Retrieving data from {source}")
-        
+
         # Map of sources to providers and default table names
         providers = {
             'sgs': (self.sgs, 'indicadores'),
@@ -287,6 +399,22 @@ class FinancialDataService:
             'anbima_debentures': (self.anbima, 'credito_privado_historico'),
             'anbima_titulos_publicos': (self.anbima, 'anbima_titulos_publicos_historico'),
             'anbima_cri_cra': (self.anbima, 'credito_privado_historico'),
+            # ANBIMA Feed (OAuth2) – preços e índices
+            'anbima_feed_titulos_publicos_mercado_secundario': (self.anbima_feed, 'indicadores'),
+            'anbima_feed_titulos_publicos_vna': (self.anbima_feed, 'indicadores'),
+            'anbima_feed_titulos_publicos_curvas_juros': (self.anbima_feed, 'indicadores'),
+            'anbima_feed_debentures_mercado_secundario': (self.anbima_feed, 'credito_privado_historico'),
+            'anbima_feed_debentures_curvas_credito': (self.anbima_feed, 'credito_privado_historico'),
+            'anbima_feed_cri_cra_mercado_secundario': (self.anbima_feed, 'credito_privado_historico'),
+            'anbima_feed_fidc_mercado_secundario': (self.anbima_feed, 'credito_privado_historico'),
+            'anbima_feed_indices_resultados_ihfa_fechado': (self.anbima_feed, 'indicadores'),
+            'anbima_feed_indices_resultados_ima': (self.anbima_feed, 'indicadores'),
+            'anbima_feed_indices_resultados_idka': (self.anbima_feed, 'indicadores'),
+            # ANBIMA Fundos v2 – endpoints de lista/lote (sem CNPJ por rota)
+            'anbima_fundos_lista': (self.anbima_fundos, 'fundos_anbima_cadastro'),
+            'anbima_fundos_instituicoes': (self.anbima_fundos, 'fundos_anbima_cadastro'),
+            'anbima_fundos_lote_dados_cadastrais': (self.anbima_fundos, 'fundos_anbima_cadastro'),
+            'anbima_fundos_lote_serie_historica': (self.anbima_fundos, 'fundos_anbima'),
             'bcb_focus': (self.bcb_focus, 'indicadores'),
             'simplify': (self.simplify, 'indicadores'),
             'invesco': (self.invesco, 'indicadores'),
