@@ -853,6 +853,71 @@ class AnbimaFundosProvider(AnbimaFeedProvider):
 
         return result
 
+    def pre_load_cnpj_cache(self, tipo_fundo: Optional[str] = None) -> int:
+        """
+        Pré-carrega o cache de CNPJ varrendo **todas** as páginas de
+        ``anbima_fundos_lista`` em uma única passagem.
+
+        Útil antes de chamar :meth:`get_series_historicas` com muitos CNPJs:
+        elimina o custo de varredura incremental por fundo e torna a resolução
+        de todos os CNPJs subsequentes instantânea (hit de cache).
+
+        Args:
+            tipo_fundo: Filtra a listagem por tipo de fundo (``"FIF"``,
+                ``"FII"``, ``"FIP"``, etc.). Reduz o número de páginas quando
+                todos os fundos de interesse são do mesmo tipo.
+
+        Returns:
+            Número de entradas adicionadas ao cache nesta chamada.
+        """
+        page = 0
+        size = 1000
+        added = 0
+        list_params: Dict[str, Any] = {"size": size}
+        if tipo_fundo:
+            list_params["tipo-fundo"] = tipo_fundo
+
+        logger.info(
+            "pre_load_cnpj_cache: iniciando varredura completa da lista de fundos ANBIMA%s…",
+            f" (tipo_fundo={tipo_fundo!r})" if tipo_fundo else "",
+        )
+        t0 = time.time()
+        while True:
+            list_params["page"] = page
+            raw = self._get(FUNDOS_BASE_PATH, params=list_params)
+            rows: List[Dict] = []
+            if isinstance(raw, dict):
+                rows = raw.get("content", raw) if isinstance(raw.get("content"), list) else []
+            elif isinstance(raw, list):
+                rows = raw
+
+            for item in rows:
+                cnpj_value = str(item.get("identificador_fundo", ""))
+                fund_code = str(item.get("codigo_fundo", ""))
+                if cnpj_value and fund_code:
+                    key = self._normalize_cnpj(cnpj_value)
+                    if key not in self._cnpj_fundo_cache:
+                        self._cnpj_fundo_cache[key] = fund_code
+                        self._fundo_cnpj_cache[fund_code] = cnpj_value
+                        added += 1
+
+            logger.debug(
+                "pre_load_cnpj_cache: página %d concluída — %d fundos lidos nesta página.",
+                page, len(rows),
+            )
+
+            if not rows or len(rows) < size:
+                break
+            page += 1
+
+        elapsed = time.time() - t0
+        logger.info(
+            "pre_load_cnpj_cache: concluído em %.1fs — "
+            "%d páginas varridas, %d fundos em cache (%d novos).",
+            elapsed, page + 1, len(self._cnpj_fundo_cache), added,
+        )
+        return added
+
     def get_series_historicas(
         self,
         codigos_ou_cnpjs: List[str],
@@ -862,9 +927,10 @@ class AnbimaFundosProvider(AnbimaFeedProvider):
         Retorna a série histórica de PL e cota para **múltiplos fundos** em um
         único DataFrame, com paginação automática por fundo.
 
-        Internamente chama :meth:`get_serie_historica` para cada item da lista,
-        acumulando os resultados. Os caches de CNPJ são compartilhados entre as
-        chamadas, então fundos do mesmo tipo não requerem re-varrimento da lista.
+        Quando a lista contém mais de um CNPJ ainda não resolvido, o método
+        executa :meth:`pre_load_cnpj_cache` automaticamente antes das consultas
+        individuais. Isso substitui N varreduras sequenciais da listagem por uma
+        única passagem, reduzindo drasticamente o tempo total.
 
         Args:
             codigos_ou_cnpjs: Lista de CNPJs (formatados ou 14 dígitos) e/ou
@@ -880,26 +946,73 @@ class AnbimaFundosProvider(AnbimaFeedProvider):
             DataFrame concatenado com coluna ``cnpj_fundo`` e todos os registros
             de todos os fundos solicitados.
         """
+        tipo_fundo = kwargs.get("tipo_fundo")
+        t_total = time.time()
+
+        # Identifica CNPJs ainda não resolvidos
+        unknown_cnpjs = [
+            v for v in codigos_ou_cnpjs
+            if self._is_cnpj(v) and self._normalize_cnpj(v) not in self._cnpj_fundo_cache
+        ]
+        if len(unknown_cnpjs) > 1:
+            logger.info(
+                "get_series_historicas: %d/%d CNPJs não estão em cache — "
+                "executando pre_load_cnpj_cache para resolver todos de uma vez.",
+                len(unknown_cnpjs), len(codigos_ou_cnpjs),
+            )
+            self.pre_load_cnpj_cache(tipo_fundo=tipo_fundo)
+        elif unknown_cnpjs:
+            logger.info(
+                "get_series_historicas: 1 CNPJ não está em cache (%s) — "
+                "será resolvido sob demanda.",
+                unknown_cnpjs[0],
+            )
+        else:
+            logger.info(
+                "get_series_historicas: todos os %d identificadores já estão em cache.",
+                len(codigos_ou_cnpjs),
+            )
+
         frames: List[pd.DataFrame] = []
         total = len(codigos_ou_cnpjs)
         for i, codigo_ou_cnpj in enumerate(codigos_ou_cnpjs, 1):
+            t_fund = time.time()
             logger.info(
-                "get_series_historicas: processando %d/%d – %s",
+                "get_series_historicas: [%d/%d] iniciando – %s",
                 i, total, codigo_ou_cnpj,
             )
             try:
                 df = self.get_serie_historica(codigo_ou_cnpj, **kwargs)
+                elapsed_fund = time.time() - t_fund
                 if not df.empty:
                     frames.append(df)
+                    logger.info(
+                        "get_series_historicas: [%d/%d] concluído em %.1fs — "
+                        "%d registros retornados.",
+                        i, total, elapsed_fund, len(df),
+                    )
+                else:
+                    logger.warning(
+                        "get_series_historicas: [%d/%d] sem dados para %s (%.1fs).",
+                        i, total, codigo_ou_cnpj, elapsed_fund,
+                    )
             except DataRetrievalError as exc:
+                elapsed_fund = time.time() - t_fund
                 logger.error(
-                    "get_series_historicas: erro ao buscar %s – %s", codigo_ou_cnpj, exc
+                    "get_series_historicas: [%d/%d] erro em %s após %.1fs – %s",
+                    i, total, codigo_ou_cnpj, elapsed_fund, exc,
                 )
 
         if not frames:
             return pd.DataFrame()
 
-        return pd.concat(frames, ignore_index=True)
+        result = pd.concat(frames, ignore_index=True)
+        logger.info(
+            "get_series_historicas: finalizado em %.1fs — "
+            "%d fundos, %d registros no total.",
+            time.time() - t_total, len(frames), len(result),
+        )
+        return result
 
     def get_instituicao_detalhes(self, cnpj: str) -> Dict[str, Any]:
         """Retorna os detalhes de uma instituição pelo CNPJ."""
