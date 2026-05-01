@@ -26,137 +26,233 @@ import numpy as np
 from scipy.optimize import minimize
 
 # ── CONSTANTES: CLASSES E BUCKETS ────────────────────────────────────────────
+#
+# `BUCKETS_CLASSES` é a fonte única da verdade para o universo de ativos.
+# A ordem dos buckets e das classes dentro de cada bucket define a ordenação
+# posicional usada por todas as matrizes/arrays do módulo (vols, cov,
+# max_weights, âncoras, intra_corrs, macro_corr). NÃO altere a ordem sem
+# revisar `_default_intra_corrs` e `DEFAULT_MACRO_CORR`.
+#
+# Campos por classe:
+#   proxy       : identificador do ativo proxy (usado para puxar séries de
+#                 dados externas; hoje hard-coded, futuramente carregado de
+#                 fonte externa)
+#   default_vol : volatilidade anualizada de referência (% a.a.)
+#   max_weight  : limite superior de peso na otimização (fração)
+#   w_p1        : peso na âncora conservadora (perfil 1)
+#   w_p10       : peso na âncora agressiva (perfil 10)
+#
+# Campos opcionais por bucket:
+#   intra_max_weight : limite superior de peso de cada classe DENTRO do
+#                      portfólio RP intra-bucket (HRP nível 2). Útil para
+#                      evitar concentração quando a estrutura intra-bucket
+#                      tem poucos ativos (ex.: RV com 2 classes). Default:
+#                      None (sem limite explícito além de [0.001, 1.0]).
 
-CLASSES = [
-    "RF Pré Curta (IRF-M 1)",
-    "RF Pré Longa (IRF-M 1+)",
-    "RF Inflação Curta (IMA-B 5)",
-    "RF Inflação Longa (IMA-B 5+)",
-    "RF Inflação Deb. GI",
-    "RF Inflação Deb. HY",
-    "RF Pós Crédito GI",
-    "RF Pós Crédito HY",
-    "Multimercado (IHFA)",
-    "Ouro",
-    "FIIs (IFIX)",
-    "RV Brasil (Ibovespa)",
-    "RV EUA c/ câmbio",
-    "RV EUA s/ câmbio",
-    "Bitcoin",
-]
+#
+# Sobre `w_p1` e `w_p10`:
+#   Os pesos foram derivados das âncoras históricas de 15 classes via:
+#     • somar GI + HY ao consolidar classes de crédito ("Inflação Crédito",
+#       "Pós Crédito"),
+#     • somar RVEC + RVES ao consolidar "RV EUA",
+#     • absorver o peso da extinta classe "FIIs" na classe nova mais
+#       próxima dinamicamente (RF Pós Crédito no perfil 1, RV Brasil no
+#       perfil 10 — equity imobiliário ≈ equity amplo).
+#   Cada coluna soma exatamente 1.0 por construção (sanity verificada
+#   em `_validate_buckets_classes`); ainda assim `build_spectrum` faz
+#   uma normalização defensiva em runtime.
 
-N_ASSETS = len(CLASSES)
-
-# Índices por bucket
-BUCKET_INDICES = {
-    "RF":          [0, 1, 2, 3, 4, 5, 6, 7],
-    "Alternativos": [8, 9, 10],
-    "RV":          [11, 12, 13, 14],
+BUCKETS_CLASSES: dict[str, dict] = {
+    "RF": {
+        "label": "Renda Fixa",
+        "classes": {
+            "RF Pré Curta":                 {"proxy": "anbima_irf_m1",      "default_vol":  0.679, "max_weight": 0.50, "w_p1": 0.350, "w_p10": 0.020},
+            "RF Pré Longa":                 {"proxy": "anbima_irf_m1+",     "default_vol":  4.989, "max_weight": 0.20, "w_p1": 0.020, "w_p10": 0.030},
+            "RF Inflação Curta":            {"proxy": "anbima_ima_b5",      "default_vol":  2.898, "max_weight": 0.30, "w_p1": 0.150, "w_p10": 0.015},
+            "RF Inflação Longa":            {"proxy": "anbima_ima_b5+",     "default_vol": 10.440, "max_weight": 0.20, "w_p1": 0.020, "w_p10": 0.060},
+            "RF Inflação Crédito":          {"proxy": "anbima_ida_ipca",    "default_vol":  4.403, "max_weight": 0.20, "w_p1": 0.110, "w_p10": 0.050},
+            "RF Pós Crédito":               {"proxy": "anbima_ida_di",      "default_vol":  1.507, "max_weight": 0.40, "w_p1": 0.320, "w_p10": 0.010},
+        },
+    },
+    "RV": {
+        "label": "Renda Variável",
+        "intra_max_weight": 0.60,
+        "classes": {
+            "RV Brasil":                    {"proxy": "br_ibovespa",        "default_vol": 21.538, "max_weight": 0.40, "w_p1": 0.000, "w_p10": 0.275},
+            "RV EUA":                       {"proxy": "us_sp500",           "default_vol": 18.630, "max_weight": 0.30, "w_p1": 0.000, "w_p10": 0.300},
+        },
+    },
+    "Alternativos": {
+        "label": "Alternativos",
+        "classes": {
+            "Multimercado":                 {"proxy": "anbima_ihfa",        "default_vol":  3.817, "max_weight": 0.30, "w_p1": 0.020, "w_p10": 0.100},
+            "Bitcoin":                      {"proxy": "bitcoin_usd",        "default_vol": 50.000, "max_weight": 0.12, "w_p1": 0.000, "w_p10": 0.090},
+            "Ouro":                         {"proxy": "gold_100oz_futures", "default_vol": 15.969, "max_weight": 0.15, "w_p1": 0.010, "w_p10": 0.050},
+        },
+    },
 }
 
-BUCKET_LABELS = {
-    "RF":           "Renda Fixa",
-    "Alternativos": "Alternativos",
-    "RV":           "Renda Variável",
+
+def _flatten_buckets(bcs: dict[str, dict]) -> list[tuple[str, str, dict]]:
+    """Itera (bucket_key, class_name, class_data) preservando ordem do dict."""
+    return [
+        (bkey, cname, cdata)
+        for bkey, b in bcs.items()
+        for cname, cdata in b["classes"].items()
+    ]
+
+
+def _build_bucket_indices(bcs: dict[str, dict]) -> dict[str, list[int]]:
+    bi: dict[str, list[int]] = {}
+    pos = 0
+    for bkey, b in bcs.items():
+        n = len(b["classes"])
+        bi[bkey] = list(range(pos, pos + n))
+        pos += n
+    return bi
+
+
+_FLAT = _flatten_buckets(BUCKETS_CLASSES)
+
+CLASSES              = [cname for _, cname, _ in _FLAT]
+N_ASSETS             = len(CLASSES)
+BUCKET_INDICES       = _build_bucket_indices(BUCKETS_CLASSES)
+BUCKET_LABELS        = {bkey: b["label"] for bkey, b in BUCKETS_CLASSES.items()}
+DEFAULT_PROXIES      = {cname: cdata["proxy"] for _, cname, cdata in _FLAT}
+DEFAULT_VOLS_PCT     = {cname: cdata["default_vol"] for _, cname, cdata in _FLAT}
+DEFAULT_MAX_WEIGHTS  = np.array([cdata["max_weight"] for _, _, cdata in _FLAT])
+DEFAULT_INTRA_BOUNDS = {
+    bkey: b.get("intra_max_weight") for bkey, b in BUCKETS_CLASSES.items()
 }
+_W_P1_RAW            = np.array([cdata["w_p1"]  for _, _, cdata in _FLAT])
+_W_P10_RAW           = np.array([cdata["w_p10"] for _, _, cdata in _FLAT])
 
-# Volatilidades históricas de referência (% a.a.)
-DEFAULT_VOLS_PCT = {
-    "RF Pré Curta (IRF-M 1)":       0.679,
-    "RF Pré Longa (IRF-M 1+)":      4.989,
-    "RF Inflação Curta (IMA-B 5)":   2.898,
-    "RF Inflação Longa (IMA-B 5+)": 10.440,
-    "RF Inflação Deb. GI":           4.403,
-    "RF Inflação Deb. HY":          10.455,
-    "RF Pós Crédito GI":             1.526,
-    "RF Pós Crédito HY":             1.507,
-    "Multimercado (IHFA)":           3.817,
-    "Ouro":                         15.969,
-    "FIIs (IFIX)":                   9.088,
-    "RV Brasil (Ibovespa)":         21.538,
-    "RV EUA c/ câmbio":             18.630,
-    "RV EUA s/ câmbio":             16.195,
-    "Bitcoin":                      70.000,
-}
 
-# Matriz de correlação sintética padrão (15×15)
-def _default_corr() -> np.ndarray:
-    PRC,PRL,INC,INL,INGI,INHY,POSGI,POSHY,IHFA,OURO,FII,IBOV,RVEC,RVES,BTC = range(15)
-    C = np.eye(15)
+def _default_intra_corrs() -> dict[str, np.ndarray]:
+    """
+    Matrizes de correlação intra-bucket padrão.
+    A ordem das linhas/colunas segue a ordem das classes em
+    `BUCKETS_CLASSES[bucket]["classes"]`.
+    """
+    # Ordem: Pré Curta, Pré Longa, Inflação Curta, Inflação Longa,
+    #        Inflação Crédito, Pós Crédito
+    C_rf = np.array([
+        [1.00, 0.75, 0.35, 0.25, 0.23, 0.10],
+        [0.75, 1.00, 0.45, 0.55, 0.35, 0.15],
+        [0.35, 0.45, 1.00, 0.70, 0.58, 0.20],
+        [0.25, 0.55, 0.70, 1.00, 0.58, 0.15],
+        [0.23, 0.35, 0.58, 0.58, 1.00, 0.26],
+        [0.10, 0.15, 0.20, 0.15, 0.26, 1.00],
+    ])
+    C_rv = np.array([
+        [1.00, 0.45],
+        [0.45, 1.00],
+    ])
+    # Ordem: Multimercado, Bitcoin, Ouro
+    C_alt = np.array([
+        [1.00, 0.10, 0.10],
+        [0.10, 1.00, 0.20],
+        [0.10, 0.20, 1.00],
+    ])
+    return {"RF": C_rf, "RV": C_rv, "Alternativos": C_alt}
 
-    def sc(i, j, v):
-        C[i, j] = v
-        C[j, i] = v
 
-    sc(PRC,PRL,0.75); sc(PRC,INC,0.35); sc(PRC,INL,0.25); sc(PRC,INGI,0.25)
-    sc(PRC,INHY,0.20); sc(PRC,POSGI,0.10); sc(PRC,POSHY,0.10); sc(PRC,IHFA,0.20)
-    sc(PRC,OURO,0.05); sc(PRC,FII,0.15); sc(PRC,IBOV,0.10); sc(PRC,RVEC,0.05)
-    sc(PRC,RVES,0.05); sc(PRC,BTC,0.02)
-    sc(PRL,INC,0.45); sc(PRL,INL,0.55); sc(PRL,INGI,0.40); sc(PRL,INHY,0.30)
-    sc(PRL,POSGI,0.15); sc(PRL,POSHY,0.15); sc(PRL,IHFA,0.30); sc(PRL,OURO,0.05)
-    sc(PRL,FII,0.25); sc(PRL,IBOV,0.15); sc(PRL,RVEC,0.05); sc(PRL,RVES,0.05); sc(PRL,BTC,0.02)
-    sc(INC,INL,0.70); sc(INC,INGI,0.65); sc(INC,INHY,0.50); sc(INC,POSGI,0.20)
-    sc(INC,POSHY,0.20); sc(INC,IHFA,0.25); sc(INC,OURO,0.15); sc(INC,FII,0.35)
-    sc(INC,IBOV,0.15); sc(INC,RVEC,0.05); sc(INC,RVES,0.05); sc(INC,BTC,0.02)
-    sc(INL,INGI,0.60); sc(INL,INHY,0.55); sc(INL,POSGI,0.15); sc(INL,POSHY,0.15)
-    sc(INL,IHFA,0.35); sc(INL,OURO,0.20); sc(INL,FII,0.45); sc(INL,IBOV,0.25)
-    sc(INL,RVEC,0.10); sc(INL,RVES,0.05); sc(INL,BTC,0.03)
-    sc(INGI,INHY,0.70); sc(INGI,POSGI,0.30); sc(INGI,POSHY,0.25); sc(INGI,IHFA,0.30)
-    sc(INGI,OURO,0.10); sc(INGI,FII,0.35); sc(INGI,IBOV,0.20); sc(INGI,RVEC,0.05)
-    sc(INGI,RVES,0.05); sc(INGI,BTC,0.02)
-    sc(INHY,POSGI,0.25); sc(INHY,POSHY,0.25); sc(INHY,IHFA,0.40); sc(INHY,OURO,0.10)
-    sc(INHY,FII,0.45); sc(INHY,IBOV,0.35); sc(INHY,RVEC,0.10); sc(INHY,RVES,0.05); sc(INHY,BTC,0.03)
-    sc(POSGI,POSHY,0.85); sc(POSGI,IHFA,0.20); sc(POSGI,OURO,0.05); sc(POSGI,FII,0.15)
-    sc(POSGI,IBOV,0.10); sc(POSGI,RVEC,0.05); sc(POSGI,RVES,0.02); sc(POSGI,BTC,0.02)
-    sc(POSHY,IHFA,0.20); sc(POSHY,OURO,0.05); sc(POSHY,FII,0.15); sc(POSHY,IBOV,0.10)
-    sc(POSHY,RVEC,0.05); sc(POSHY,RVES,0.02); sc(POSHY,BTC,0.02)
-    sc(IHFA,OURO,0.10); sc(IHFA,FII,0.40); sc(IHFA,IBOV,0.55); sc(IHFA,RVEC,0.30)
-    sc(IHFA,RVES,0.25); sc(IHFA,BTC,0.10)
-    sc(OURO,FII,0.10); sc(OURO,IBOV,0.05); sc(OURO,RVEC,-0.10); sc(OURO,RVES,0.10); sc(OURO,BTC,0.20)
-    sc(FII,IBOV,0.60); sc(FII,RVEC,0.15); sc(FII,RVES,0.10); sc(FII,BTC,0.05)
-    sc(IBOV,RVEC,0.45); sc(IBOV,RVES,0.30); sc(IBOV,BTC,0.15)
-    sc(RVEC,RVES,0.75); sc(RVEC,BTC,0.15); sc(RVES,BTC,0.10)
-    return C
-
-DEFAULT_CORR = _default_corr()
-
-# Correlações macro entre buckets (RF, Alt, RV)
+# Correlações macro entre buckets — ordem segue BUCKETS_CLASSES (RF, RV, Alt)
 DEFAULT_MACRO_CORR = np.array([
-    [1.00, 0.25, 0.20],
-    [0.25, 1.00, 0.45],
-    [0.20, 0.45, 1.00],
+    [1.00, 0.20, 0.25],
+    [0.20, 1.00, 0.45],
+    [0.25, 0.45, 1.00],
 ])
 
-# Limites máximos de peso por ativo (ex-caixa)
-DEFAULT_MAX_WEIGHTS = np.array([
-    0.50, 0.20, 0.30, 0.20, 0.20, 0.15, 0.40, 0.40,
-    0.30, 0.15, 0.20,
-    0.40, 0.30, 0.30, 0.12,
-])
 
-# Portfólio âncora conservador (perfil 1)
-_W_P1_RAW = np.array([
-    0.35, 0.02, 0.15, 0.02, 0.08, 0.03, 0.20, 0.10,
-    0.02, 0.01, 0.01,
-    0.00, 0.00, 0.00, 0.00,
-])
+def _validate_buckets_classes(bcs: dict[str, dict]) -> None:
+    """Sanity checks executados no carregamento do módulo."""
+    required_class_keys = {"proxy", "default_vol", "max_weight", "w_p1", "w_p10"}
+    seen_proxies: dict[str, str] = {}
+    for bkey, b in bcs.items():
+        if "label" not in b or "classes" not in b:
+            raise ValueError(f"Bucket '{bkey}' deve conter 'label' e 'classes'")
+        if not b["classes"]:
+            raise ValueError(f"Bucket '{bkey}' não pode estar vazio")
+        if "intra_max_weight" in b:
+            imw = b["intra_max_weight"]
+            if imw is not None and not 0.0 < imw <= 1.0:
+                raise ValueError(
+                    f"intra_max_weight do bucket '{bkey}' deve estar em (0, 1] ou ser None, "
+                    f"recebido {imw}"
+                )
+        for cname, cdata in b["classes"].items():
+            missing = required_class_keys - cdata.keys()
+            if missing:
+                raise ValueError(
+                    f"Classe '{cname}' (bucket '{bkey}') não tem os campos: {sorted(missing)}"
+                )
+            proxy = cdata["proxy"]
+            if not isinstance(proxy, str) or not proxy.strip():
+                raise ValueError(
+                    f"proxy de '{cname}' deve ser string não-vazia, recebido {proxy!r}"
+                )
+            if proxy in seen_proxies:
+                raise ValueError(
+                    f"proxy '{proxy}' duplicado nas classes "
+                    f"'{seen_proxies[proxy]}' e '{cname}'"
+                )
+            seen_proxies[proxy] = cname
+            if not 0.0 < cdata["max_weight"] <= 1.0:
+                raise ValueError(
+                    f"max_weight de '{cname}' deve estar em (0, 1], recebido {cdata['max_weight']}"
+                )
+            for k in ("w_p1", "w_p10"):
+                if not 0.0 <= cdata[k] <= 1.0:
+                    raise ValueError(f"{k} de '{cname}' deve estar em [0, 1]")
+            if cdata["default_vol"] <= 0:
+                raise ValueError(f"default_vol de '{cname}' deve ser > 0")
+    # Âncoras: soma > 0 (são renormalizadas em build_spectrum, mas
+    # idealmente já somam 1.0 para serem alocações interpretáveis).
+    if _W_P1_RAW.sum() <= 0 or _W_P10_RAW.sum() <= 0:
+        raise ValueError("Soma das âncoras (w_p1, w_p10) deve ser > 0")
+    for name, raw in [("w_p1", _W_P1_RAW), ("w_p10", _W_P10_RAW)]:
+        s = float(raw.sum())
+        if abs(s - 1.0) > 0.05:
+            warnings.warn(
+                f"Soma de {name} = {s:.4f} (longe de 1.0). Os valores serão "
+                f"renormalizados em runtime, mas considere ajustar para 1.0 "
+                f"para que a interpretação como alocação seja direta.",
+                UserWarning,
+                stacklevel=2,
+            )
 
-# Portfólio âncora agressivo (perfil 10)
-_W_P10_RAW = np.array([
-    0.020, 0.030, 0.015, 0.060, 0.030, 0.020, 0.005, 0.005,
-    0.100, 0.050, 0.045,
-    0.230, 0.150, 0.150, 0.090,
-])
+
+def _validate_intra_corrs_shapes(
+    intra_corrs: dict[str, np.ndarray],
+    bucket_indices: dict[str, list[int]],
+) -> None:
+    """Verifica que cada matriz intra-bucket tem shape compatível com o bucket."""
+    for bkey, idxs in bucket_indices.items():
+        if bkey not in intra_corrs:
+            raise ValueError(f"_default_intra_corrs() não contém o bucket '{bkey}'")
+        expected = (len(idxs), len(idxs))
+        actual = intra_corrs[bkey].shape
+        if actual != expected:
+            raise ValueError(
+                f"_default_intra_corrs()['{bkey}'] tem shape {actual}, "
+                f"esperado {expected} (n_classes do bucket '{bkey}' em BUCKETS_CLASSES). "
+                f"Atualize a matriz para refletir a quantidade atual de classes."
+            )
+
+
+_validate_buckets_classes(BUCKETS_CLASSES)
+_validate_intra_corrs_shapes(_default_intra_corrs(), BUCKET_INDICES)
 
 
 # ── FUNÇÕES MATEMÁTICAS ───────────────────────────────────────────────────────
 
-def _port_vol(w: np.ndarray, cov: np.ndarray) -> float:
+def _portfolio_vol(w: np.ndarray, cov: np.ndarray) -> float:
     return float(np.sqrt(w @ cov @ w))
 
 
 def _risk_contrib(w: np.ndarray, cov: np.ndarray) -> np.ndarray:
-    pv = _port_vol(w, cov)
+    pv = _portfolio_vol(w, cov)
     if pv == 0.0:
         return np.zeros_like(w)
     return w * (cov @ w) / pv
@@ -203,22 +299,58 @@ def _build_cov(vols: np.ndarray, corr: np.ndarray) -> np.ndarray:
     return D @ corr @ D
 
 
-def _build_block_diag_corr(
-    n_assets: int,
+def _validate_corr_psd(corr: np.ndarray, name: str = "corr") -> None:
+    """
+    Verifica simetria e positividade semi-definida.
+
+    Usa tolerância relativa para PSD: `min_eig < -tol`, onde
+    `tol = max(1e-8, 1e-10 * max(|eigs|))`. Isso evita falsos positivos
+    de PSD em matrizes grandes onde o ruído numérico de `eigvalsh` pode
+    produzir autovalores ligeiramente negativos (~1e-12) sem haver
+    inconsistência real.
+    """
+    if not np.allclose(corr, corr.T, atol=1e-8):
+        raise ValueError(f"{name} não é simétrica")
+    eigs = np.linalg.eigvalsh(corr)
+    min_eig = float(eigs.min())
+    max_abs = float(np.abs(eigs).max())
+    tol = max(1e-8, 1e-10 * max_abs)
+    if min_eig < -tol:
+        raise ValueError(
+            f"{name} não é positiva semi-definida (menor autovalor: {min_eig:.6e}, "
+            f"tolerância: {tol:.6e})"
+        )
+
+
+def _build_full_corr(
     bucket_indices: dict[str, list[int]],
     intra_corrs: dict[str, np.ndarray],
+    macro_corr: np.ndarray | None = None,
 ) -> np.ndarray:
     """
-    Constrói uma matriz de correlação completa bloco-diagonal:
-    correlações intra-bucket fornecidas; correlação zero entre buckets.
-    Usada quando corr_matrix global não é fornecida para classes customizadas.
+    Constrói uma matriz de correlação completa n×n a partir de:
+      • intra_corrs[bucket]    → estrutura completa dentro de cada bucket
+      • macro_corr[a, b]       → correlação entre os buckets a e b
+                                 (constante para todos os pares cross-bucket)
+
+    Se `macro_corr` for None, a correlação cross-bucket é zero (bloco-diagonal).
     """
+    n_assets = sum(len(idxs) for idxs in bucket_indices.values())
     corr = np.eye(n_assets)
-    for bkey, idxs in bucket_indices.items():
-        c = intra_corrs[bkey]
-        for i, ii in enumerate(idxs):
-            for j, jj in enumerate(idxs):
-                corr[ii, jj] = c[i, j]
+    bkeys = list(bucket_indices.keys())
+
+    for a, bk_a in enumerate(bkeys):
+        ia = bucket_indices[bk_a]
+        corr[np.ix_(ia, ia)] = intra_corrs[bk_a]
+
+        if macro_corr is None:
+            continue
+        for b in range(a + 1, len(bkeys)):
+            ib = bucket_indices[bkeys[b]]
+            rho = float(macro_corr[a, b])
+            corr[np.ix_(ia, ib)] = rho
+            corr[np.ix_(ib, ia)] = rho
+
     return corr
 
 
@@ -237,13 +369,19 @@ def _compute_hrp(
     macro_corr: np.ndarray,
     intra_corrs: dict[str, np.ndarray],
     bucket_indices: dict[str, list[int]] | None = None,
+    intra_bounds: dict[str, float | None] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """
     Retorna (w_hrp, w_macro) onde:
       w_hrp   → pesos de todos os ativos no portfólio HRP
       w_macro → pesos dos buckets no nível macro
+
+    `intra_bounds[bkey]` (opcional) define o peso máximo de cada classe dentro
+    do RP intra-bucket. Se None ou ausente, usa o default `(0.001, 1.0)` do
+    `_solve_rp`.
     """
     _bkt_idxs = bucket_indices if bucket_indices is not None else BUCKET_INDICES
+    _intra_bounds = intra_bounds or {}
     bucket_keys = list(_bkt_idxs.keys())
     n_buckets = len(bucket_keys)
     n_assets = sum(len(v) for v in _bkt_idxs.values())
@@ -257,11 +395,12 @@ def _compute_hrp(
         C_bkt = intra_corrs[bkey]
         COV_bkt = _build_cov(v_bkt, C_bkt)
 
-        bnds = [(0.01, 0.60)] * len(idxs) if bkey == "RV" else None
+        intra_max = _intra_bounds.get(bkey)
+        bnds = [(0.01, float(intra_max))] * len(idxs) if intra_max is not None else None
         w_bkt = _solve_rp(len(idxs), COV_bkt, bnds)
         w_bkts[bkey] = w_bkt
         # Vol realizada do portfólio RP intra-bucket como representante do bucket
-        bvols[k_idx] = _port_vol(w_bkt, COV_bkt)
+        bvols[k_idx] = _portfolio_vol(w_bkt, COV_bkt)
 
     # Nível 1: RP entre buckets usando a vol real de cada portfólio intra-bucket
     COV_macro = _build_cov(bvols, macro_corr)
@@ -278,32 +417,6 @@ def _compute_hrp(
     return w_hrp, w_macro
 
 
-def _default_intra_corrs() -> dict[str, np.ndarray]:
-    """Matrizes de correlação intra-bucket padrão."""
-    C_rf = np.array([
-        [1.00, 0.75, 0.35, 0.25, 0.25, 0.20, 0.10, 0.10],
-        [0.75, 1.00, 0.45, 0.55, 0.40, 0.30, 0.15, 0.15],
-        [0.35, 0.45, 1.00, 0.70, 0.65, 0.50, 0.20, 0.20],
-        [0.25, 0.55, 0.70, 1.00, 0.60, 0.55, 0.15, 0.15],
-        [0.25, 0.40, 0.65, 0.60, 1.00, 0.70, 0.30, 0.25],
-        [0.20, 0.30, 0.50, 0.55, 0.70, 1.00, 0.25, 0.25],
-        [0.10, 0.15, 0.20, 0.15, 0.30, 0.25, 1.00, 0.85],
-        [0.10, 0.15, 0.20, 0.15, 0.25, 0.25, 0.85, 1.00],
-    ])
-    C_alt = np.array([
-        [1.00, 0.10, 0.40],
-        [0.10, 1.00, 0.10],
-        [0.40, 0.10, 1.00],
-    ])
-    C_rv = np.array([
-        [1.00, 0.45, 0.30, 0.15],
-        [0.45, 1.00, 0.75, 0.15],
-        [0.30, 0.75, 1.00, 0.10],
-        [0.15, 0.15, 0.10, 1.00],
-    ])
-    return {"RF": C_rf, "Alternativos": C_alt, "RV": C_rv}
-
-
 # ── OTIMIZAÇÃO POR PERFIL ─────────────────────────────────────────────────────
 
 def _optimize_profile(
@@ -317,11 +430,41 @@ def _optimize_profile(
     max_weights: np.ndarray,
     min_weight_threshold: float = 0.005,
     vol_min: float = 0.01,
-) -> np.ndarray:
+    risk_concentration_penalty: float = 5.0,
+) -> tuple[np.ndarray, bool]:
     """
     Para um vol_target dado, encontra o portfólio mais próximo ao HRP
     que atinge exatamente aquela volatilidade.
+
+    A função objetivo é Σᵢ (wᵢ − wᵢ_ref)² · (1 + λ·wᵢ_ref), onde λ é
+    `risk_concentration_penalty`. Esse fator penaliza mais desvios em
+    ativos com peso de referência alto (mantém os "core holdings" próximos
+    do alvo). λ=5 é o default heurístico; aumentar reforça o ancoramento.
+
+    A constraint de vol é uma igualdade (`_portfolio_vol(w, cov) == vol_target`),
+    que define uma superfície não-convexa. SLSQP resolve mas pode falhar em
+    casos extremos. Após a otimização, pesos abaixo de `min_weight_threshold`
+    são zerados e a soma é renormalizada para 1 — esse passo de pós-processamento
+    pode mover ligeiramente a vol final do portfólio para fora de `vol_target`
+    (verificável via `vol_realized` no resultado).
+
+    Retorna
+    -------
+    (w, converged) : tuple
+        w         : pesos finais (n,) com soma 1.
+        converged : True se ao menos um ponto inicial convergiu (`res.success`),
+                    False se todas as tentativas falharam (cai no fallback w_ref).
     """
+    # Guard: âncora agressiva precisa ter vol estritamente maior que HRP
+    if vol_p10 <= vol_hrp:
+        warnings.warn(
+            f"_optimize_profile: vol_p10 ({vol_p10:.4f}) ≤ vol_hrp ({vol_hrp:.4f}) — "
+            f"interpolação acima do HRP indefinida; usando HRP como teto.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
+        vol_p10 = vol_hrp + 1e-6  # pequeno épsilon para evitar div-zero
+
     # Portfólio de referência por interpolação linear
     if vol_target <= vol_hrp:
         denom = vol_hrp - vol_min
@@ -335,15 +478,15 @@ def _optimize_profile(
     w_ref /= w_ref.sum()
 
     def objective(w):
-        return float(np.sum((w - w_ref) ** 2 * (1 + 5 * w_ref)))
+        return float(np.sum((w - w_ref) ** 2 * (1 + risk_concentration_penalty * w_ref)))
 
     constraints = [
         {"type": "eq", "fun": lambda w: w.sum() - 1},
-        {"type": "eq", "fun": lambda w: _port_vol(w, cov) - vol_target},
+        {"type": "eq", "fun": lambda w: _portfolio_vol(w, cov) - vol_target},
     ]
     bounds = [(0.0, float(max_weights[i])) for i in range(len(max_weights))]
 
-    best_w, best_obj = None, np.inf
+    best_w, best_obj, converged = None, np.inf, False
     for w0_raw in [w_ref, w_hrp, w_p1, w_p10]:
         w0 = np.clip(w0_raw, [b[0] for b in bounds], [b[1] for b in bounds])
         w0 /= w0.sum()
@@ -358,6 +501,7 @@ def _optimize_profile(
             if res.success and res.fun < best_obj:
                 best_obj = res.fun
                 best_w = res.x.copy()
+                converged = True
         except Exception as exc:
             warnings.warn(
                 f"_optimize_profile: falha na otimização com ponto inicial — {exc}",
@@ -367,16 +511,18 @@ def _optimize_profile(
 
     if best_w is None:
         best_w = w_ref.copy()
+        converged = False
 
     best_w = np.clip(best_w, 0.0, 1.0)
     best_w /= best_w.sum()
 
-    # Zerar posições abaixo do threshold mínimo
+    # Pós-processamento: zera pesos < threshold e renormaliza.
+    # Isso pode causar pequeno desvio entre vol_realized e vol_target.
     best_w[best_w < min_weight_threshold] = 0.0
     if best_w.sum() > 0:
         best_w /= best_w.sum()
 
-    return best_w
+    return best_w, converged
 
 
 # ── FUNÇÃO PRINCIPAL ──────────────────────────────────────────────────────────
@@ -387,74 +533,116 @@ def build_spectrum(
     macro_corr: np.ndarray | None = None,
     intra_corrs: dict[str, np.ndarray] | None = None,
     sigma_min_pct: float = 1.0,
-    sigma_max_pct: float = 11.92,
+    sigma_max_pct: float = 12.0,
     max_weights: np.ndarray | None = None,
     min_weight_threshold: float = 0.005,
     n_profiles: int = 10,
     classes: list[str] | None = None,
     bucket_indices: dict[str, list[int]] | None = None,
     bucket_labels: dict[str, str] | None = None,
+    intra_bounds: dict[str, float | None] | None = None,
     w_anchor_conservative: np.ndarray | None = None,
     w_anchor_aggressive: np.ndarray | None = None,
+    risk_concentration_penalty: float = 5.0,
 ) -> dict:
     """
     Calcula o espectro completo de alocação.
 
+    Universo padrão (definido em `BUCKETS_CLASSES`): 11 classes em 3 buckets,
+    layout {RF: [0-5], RV: [6-7], Alternativos: [8-10]}. A ordem em
+    `BUCKETS_CLASSES` é a fonte da verdade — `BUCKET_INDICES` é derivado dela.
+
+    LIMITAÇÃO DO MODELO DE COVARIÂNCIA PADRÃO
+    -----------------------------------------
+    Quando `corr_matrix` não é fornecida, a covariância é montada como:
+      • estrutura intra-bucket completa (via `intra_corrs[bucket]`), e
+      • correlação cross-bucket CONSTANTE por par-de-bucket (via `macro_corr`).
+    Ou seja, todo par (RF × RV) recebe a mesma correlação, independente de
+    quais classes específicas. Para o universo padrão isso é uma simplificação
+    consciente: na realidade, "RF Inflação Longa × Ibovespa" tem dinâmica
+    bem diferente de "RF Pós Crédito × Ibovespa". Se essa precisão importar
+    para o seu caso, passe sua própria `corr_matrix` n×n com a estrutura
+    cross-bucket por-par-de-classe que desejar.
+
     Parâmetros
     ----------
     vols_pct : dict {classe: vol em % a.a.}
-        Volatilidades anualizadas. Se None, usa os defaults (15 classes).
+        Volatilidades anualizadas. Se None, usa os defaults definidos em
+        `BUCKETS_CLASSES`.
     corr_matrix : np.ndarray (n×n)
-        Matriz de correlação global. Se None e usando classes default, usa a
-        sintética padrão. Se None e usando classes customizadas, constrói
-        bloco-diagonal a partir de intra_corrs (ou identidade, com aviso).
+        Matriz de correlação global. Se fornecida, é usada diretamente para
+        a covariância (e pula a montagem intra+macro). Se None, a corr global
+        é construída a partir de `intra_corrs` (estrutura intra-bucket) +
+        `macro_corr` (correlação constante entre buckets). A matriz montada
+        é validada (simétrica e PSD) antes de ser usada.
     macro_corr : np.ndarray (k×k, k = nº de buckets)
-        Correlações entre buckets. Se None, usa o default (3×3 para 3 buckets)
-        ou identidade para outros casos.
+        Correlações entre buckets, usadas pelo HRP nível 1 (Risk Parity
+        macro). Se None:
+          • se `corr_matrix` foi fornecida, deriva como média dos blocos
+            cross-bucket — mantém o HRP consistente com a covariância;
+          • senão, usa `DEFAULT_MACRO_CORR` (3×3) quando o universo padrão
+            é usado ou há exatamente 3 buckets;
+          • caso contrário, identidade.
     intra_corrs : dict {bucket: np.ndarray}
-        Correlações intra-bucket. Se None, usa os defaults quando possível.
+        Correlações intra-bucket. Se None e usando o universo padrão, usa
+        `_default_intra_corrs()`. Se None com classes customizadas, usa
+        identidade por bucket (com aviso).
     sigma_min_pct : float
         Volatilidade-alvo do perfil 1 (% a.a.). Default: 1.0
     sigma_max_pct : float
-        Volatilidade-alvo do perfil 10 (% a.a.). Default: 11.92
+        Volatilidade-alvo do perfil 10 (% a.a.). Default: 12.0
     max_weights : np.ndarray (n,)
-        Limite máximo de peso por ativo. Se None, usa os defaults para as 15
-        classes padrão, ou 1.0 para cada ativo em universos customizados.
+        Limite máximo de peso por ativo. Se None, usa os defaults do
+        universo padrão (`DEFAULT_MAX_WEIGHTS`), ou 1.0 para cada ativo em
+        universos customizados.
     min_weight_threshold : float
-        Pesos abaixo deste valor são zerados. Default: 0.005 (0,5%)
+        Pesos abaixo deste valor são zerados após a otimização e a soma é
+        renormalizada para 1. Por causa dessa renormalização, `vol_realized`
+        pode se desviar ligeiramente de `vol_targets` — isso NÃO indica falha
+        do solver. Default: 0.005 (0,5%).
     n_profiles : int
         Número de perfis. Default: 10.
     classes : list[str]
-        Nomes das classes de ativos. Se None, usa o universo padrão de 15 classes.
+        Nomes das classes de ativos. Se None, usa o universo padrão.
     bucket_indices : dict {bucket: list[int]}
         Mapeamento bucket → índices dos ativos em `classes`. Se None, usa o
-        padrão {RF: [0-7], Alternativos: [8-10], RV: [11-14]}.
+        padrão {RF: [0-5], RV: [6-7], Alternativos: [8-10]}.
     bucket_labels : dict {bucket: str}
         Rótulos descritivos dos buckets. Se None, usa os defaults.
+    intra_bounds : dict {bucket: float | None}
+        Peso máximo por classe DENTRO do RP intra-bucket (HRP nível 2). Se
+        None, usa `DEFAULT_INTRA_BOUNDS` no universo padrão (RV=0.60), ou
+        sem limite explícito em universos customizados.
     w_anchor_conservative : np.ndarray (n,)
         Portfólio-âncora para interpolar o perfil mais conservador.
-        Se None, usa o padrão (pesos do perfil 1 histórico) para as 15 classes,
-        ou pesos iguais para universos customizados.
+        Se None, usa `_W_P1_RAW` para o universo padrão, ou pesos iguais
+        para universos customizados.
     w_anchor_aggressive : np.ndarray (n,)
         Portfólio-âncora para interpolar o perfil mais agressivo.
-        Se None, usa o padrão (pesos do perfil 10 histórico) para as 15 classes,
-        ou pesos iguais para universos customizados.
+        Se None, usa `_W_P10_RAW` para o universo padrão, ou pesos iguais
+        para universos customizados. Deve ter vol > vol_hrp.
+    risk_concentration_penalty : float
+        Coeficiente λ da função objetivo Σ (wᵢ − wᵢ_ref)² · (1 + λ·wᵢ_ref).
+        Penaliza mais desvios em ativos com peso de referência alto.
+        Default: 5.0.
 
     Retorna
     -------
     dict com chaves:
-      classes        → list[str]         nomes das classes
-      vols           → np.ndarray        vols em decimal
-      cov            → np.ndarray        matriz de covariância (n×n)
-      vol_targets    → np.ndarray        vols-alvo em decimal (n_profiles,)
-      w_hrp          → np.ndarray        pesos HRP (n,)
-      w_macro        → np.ndarray        pesos macro por bucket (k,)
-      vol_hrp        → float             vol do portfólio HRP (%)
-      weights        → dict[int→array]   pesos por perfil
-      vol_realized   → dict[int→float]   vol realizada por perfil (%)
-      risk_contrib   → dict[int→array]   contrib. de risco por perfil (fração)
-      bucket_indices → dict              mapeamento bucket → índices
-      bucket_labels  → dict              rótulos dos buckets
+      classes               → list[str]         nomes das classes
+      vols                  → np.ndarray        vols em decimal
+      cov                   → np.ndarray        matriz de covariância (n×n)
+      vol_targets           → np.ndarray        vols-alvo em decimal (n_profiles,)
+      w_hrp                 → np.ndarray        pesos HRP (n,)
+      w_macro               → np.ndarray        pesos macro por bucket (k,)
+      vol_hrp               → float             vol do portfólio HRP (%)
+      weights               → dict[int→array]   pesos por perfil
+      vol_realized          → dict[int→float]   vol realizada por perfil (%)
+      risk_contrib          → dict[int→array]   contrib. de risco por perfil (fração)
+      converged_per_profile → dict[int→bool]    True se o solver convergiu para o perfil
+      bucket_indices        → dict              mapeamento bucket → índices
+      bucket_labels         → dict              rótulos dos buckets
+      min_weight_threshold  → float             threshold usado para zerar pesos
     """
     # ── Resolve universo de ativos ────────────────────────────────────────────
     _using_default_universe = classes is None
@@ -488,13 +676,7 @@ def build_spectrum(
             raise ValueError(
                 f"corr_matrix deve ter shape ({n_assets}, {n_assets}), recebido {corr_matrix.shape}"
             )
-        if not np.allclose(corr_matrix, corr_matrix.T, atol=1e-8):
-            raise ValueError("corr_matrix não é simétrica")
-        min_eig = float(np.linalg.eigvalsh(corr_matrix).min())
-        if min_eig < -1e-8:
-            raise ValueError(
-                f"corr_matrix não é positiva semi-definida (menor autovalor: {min_eig:.6f})"
-            )
+        _validate_corr_psd(corr_matrix, name="corr_matrix")
 
     if macro_corr is not None and macro_corr.shape != (n_buckets, n_buckets):
         raise ValueError(
@@ -536,36 +718,76 @@ def build_spectrum(
         )
 
     # ── Matriz de covariância ─────────────────────────────────────────────────
+    # Resolve correlações intra e macro a partir das entradas (com defaults).
+    if corr_matrix is not None:
+        _intra = {bkey: corr_matrix[np.ix_(idxs, idxs)] for bkey, idxs in _bucket_indices.items()}
+    elif intra_corrs is not None:
+        _intra = intra_corrs
+    elif _using_default_universe:
+        _intra = _default_intra_corrs()
+    else:
+        _intra = {bkey: np.eye(len(idxs)) for bkey, idxs in _bucket_indices.items()}
+        warnings.warn(
+            "intra_corrs não fornecida para classes customizadas — usando correlação zero entre ativos.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    if macro_corr is not None:
+        _macro = macro_corr
+    elif corr_matrix is not None:
+        # Deriva da corr_matrix global (média dos blocos cross-bucket) para
+        # manter HRP nível 1 consistente com a covariância principal.
+        bkeys = list(_bucket_indices.keys())
+        _macro = np.eye(n_buckets)
+        for a, ka in enumerate(bkeys):
+            ia = _bucket_indices[ka]
+            for b in range(a + 1, n_buckets):
+                ib = _bucket_indices[bkeys[b]]
+                rho = float(corr_matrix[np.ix_(ia, ib)].mean())
+                _macro[a, b] = rho
+                _macro[b, a] = rho
+    elif _using_default_universe:
+        _macro = DEFAULT_MACRO_CORR
+    elif n_buckets == 3:
+        _macro = DEFAULT_MACRO_CORR
+    else:
+        _macro = np.eye(n_buckets)
+
+    # Se o usuário forneceu corr_matrix global, usa-a diretamente.
+    # Senão, constrói a partir de intra + macro (modelo: estrutura intra
+    # completa + correlação macro constante entre buckets) e valida PSD —
+    # combinações patológicas de correlações intra altas + macro altas
+    # podem violar PSD.
     if corr_matrix is not None:
         cov = _build_cov(vols, corr_matrix)
-        _intra = {bkey: corr_matrix[np.ix_(idxs, idxs)] for bkey, idxs in _bucket_indices.items()}
-        _macro = macro_corr if macro_corr is not None else (
-            DEFAULT_MACRO_CORR if n_buckets == 3 else np.eye(n_buckets)
-        )
-    elif _using_default_universe and intra_corrs is None:
-        cov = _build_cov(vols, DEFAULT_CORR)
-        _intra = _default_intra_corrs()
-        _macro = macro_corr if macro_corr is not None else DEFAULT_MACRO_CORR
     else:
-        # Classes customizadas ou intra_corrs explícitas: constrói bloco-diagonal
-        _intra = intra_corrs if intra_corrs is not None else {
-            bkey: np.eye(len(idxs)) for bkey, idxs in _bucket_indices.items()
-        }
-        if intra_corrs is None:
+        full_corr = _build_full_corr(_bucket_indices, _intra, _macro)
+        _validate_corr_psd(full_corr, name="correlação montada (intra+macro)")
+        cov = _build_cov(vols, full_corr)
+
+    # ── Bounds intra-bucket para o HRP nível 2 ────────────────────────────────
+    if intra_bounds is not None:
+        _intra_bounds = intra_bounds
+    elif _using_default_universe:
+        _intra_bounds = DEFAULT_INTRA_BOUNDS
+    else:
+        _intra_bounds = None
+        # Avisa se há intra_max_weight definidos no módulo que o usuário
+        # pode estar perdendo silenciosamente ao customizar o universo.
+        defaults_set = {k: v for k, v in DEFAULT_INTRA_BOUNDS.items() if v is not None}
+        if defaults_set:
             warnings.warn(
-                "intra_corrs não fornecida para classes customizadas — usando correlação zero entre ativos.",
+                f"Universo customizado sem intra_bounds — DEFAULT_INTRA_BOUNDS "
+                f"({defaults_set}) NÃO será aplicado. Passe intra_bounds explicitamente "
+                f"se quiser limitar pesos dentro do RP intra-bucket.",
                 UserWarning,
                 stacklevel=2,
             )
-        block_corr = _build_block_diag_corr(n_assets, _bucket_indices, _intra)
-        cov = _build_cov(vols, block_corr)
-        _macro = macro_corr if macro_corr is not None else (
-            DEFAULT_MACRO_CORR if n_buckets == 3 else np.eye(n_buckets)
-        )
 
     # ── HRP ───────────────────────────────────────────────────────────────────
-    w_hrp, w_macro = _compute_hrp(vols, _macro, _intra, _bucket_indices)
-    vol_hrp = _port_vol(w_hrp, cov) * 100.0
+    w_hrp, w_macro = _compute_hrp(vols, _macro, _intra, _bucket_indices, _intra_bounds)
+    vol_hrp = _portfolio_vol(w_hrp, cov) * 100.0
 
     # ── Curva exponencial de vols-alvo ────────────────────────────────────────
     vol_targets = _vol_curve(sigma_min_pct / 100.0, sigma_max_pct / 100.0, n_profiles)
@@ -585,7 +807,17 @@ def build_spectrum(
     else:
         w_p10 = np.ones(n_assets) / n_assets
 
-    vol_p10 = _port_vol(w_p10, cov) * 100.0
+    vol_p10 = _portfolio_vol(w_p10, cov) * 100.0
+
+    # Sanity check: âncora agressiva precisa ter vol > HRP para a interpolação
+    # do trecho superior fazer sentido.
+    if vol_p10 <= vol_hrp:
+        warnings.warn(
+            f"vol da âncora agressiva ({vol_p10:.2f}%) ≤ vol do HRP "
+            f"({vol_hrp:.2f}%). Perfis com vol_target > vol_hrp ficarão clipados.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     # ── Pesos máximos ─────────────────────────────────────────────────────────
     if max_weights is not None:
@@ -599,10 +831,11 @@ def build_spectrum(
     weights: dict[int, np.ndarray] = {}
     vol_realized: dict[int, float] = {}
     risk_contrib: dict[int, np.ndarray] = {}
+    converged_per_profile: dict[int, bool] = {}
 
     for p in range(1, n_profiles + 1):
         vt = float(vol_targets[p - 1])
-        w = _optimize_profile(
+        w, converged = _optimize_profile(
             vol_target=vt,
             cov=cov,
             w_hrp=w_hrp,
@@ -613,27 +846,31 @@ def build_spectrum(
             max_weights=_max_w,
             min_weight_threshold=min_weight_threshold,
             vol_min=sigma_min_pct / 100.0,
+            risk_concentration_penalty=risk_concentration_penalty,
         )
         weights[p] = w
-        vol_realized[p] = _port_vol(w, cov) * 100.0
+        vol_realized[p] = _portfolio_vol(w, cov) * 100.0
+        converged_per_profile[p] = converged
 
         rc = _risk_contrib(w, cov)
         rc_total = rc.sum()
         risk_contrib[p] = rc / rc_total if rc_total > 0 else rc
 
     return {
-        "classes":        _classes,
-        "vols":           vols,
-        "cov":            cov,
-        "vol_targets":    vol_targets,
-        "w_hrp":          w_hrp,
-        "w_macro":        w_macro,
-        "vol_hrp":        vol_hrp,
-        "weights":        weights,
-        "vol_realized":   vol_realized,
-        "risk_contrib":   risk_contrib,
-        "bucket_indices": _bucket_indices,
-        "bucket_labels":  _bucket_labels,
+        "classes":               _classes,
+        "vols":                  vols,
+        "cov":                   cov,
+        "vol_targets":           vol_targets,
+        "w_hrp":                 w_hrp,
+        "w_macro":                w_macro,
+        "vol_hrp":               vol_hrp,
+        "weights":               weights,
+        "vol_realized":          vol_realized,
+        "risk_contrib":          risk_contrib,
+        "converged_per_profile": converged_per_profile,
+        "bucket_indices":        _bucket_indices,
+        "bucket_labels":         _bucket_labels,
+        "min_weight_threshold":  min_weight_threshold,
     }
 
 
@@ -641,17 +878,24 @@ def get_profile_summary(result: dict, profile: int) -> dict:
     """
     Retorna um resumo legível de um perfil específico.
 
+    Filtra ativos com peso abaixo do `min_weight_threshold` registrado em
+    `result` (mesmo threshold usado pelo otimizador para zerar pesos), de
+    forma que o resumo só liste posições efetivamente alocadas.
+
     Exemplo:
         summary = get_profile_summary(result, profile=5)
-        summary['bucket_weights']   → {'RF': 0.62, 'Alternativos': 0.27, 'RV': 0.11}
-        summary['asset_weights']    → [{'class': ..., 'weight': ..., 'risk_contrib': ...}]
-        summary['vol_target']       → 3.01  (%)
-        summary['vol_realized']     → 3.01  (%)
+        summary['bucket_weights']    → {'RF': 0.62, 'RV': 0.11, 'Alternativos': 0.27}
+        summary['asset_weights']     → [{'class': ..., 'weight': ..., ...}]
+        summary['vol_target']        → 3.01  (%)
+        summary['vol_realized']      → 3.01  (%)
+        summary['converged']         → True/False
     """
     w = result["weights"][profile]
     rc = result["risk_contrib"][profile]
     vt = result["vol_targets"][profile - 1] * 100.0
     vr = result["vol_realized"][profile]
+    threshold = result.get("min_weight_threshold", 0.005)
+    converged = result.get("converged_per_profile", {}).get(profile, True)
 
     bucket_weights = {
         bkey: float(sum(w[i] for i in idxs))
@@ -660,39 +904,44 @@ def get_profile_summary(result: dict, profile: int) -> dict:
 
     asset_weights = [
         {
-            "class":       result["classes"][i],
-            "bucket":      next(k for k, v in result["bucket_indices"].items() if i in v),
-            "weight":      float(w[i]),
+            "class":        result["classes"][i],
+            "bucket":       next(k for k, v in result["bucket_indices"].items() if i in v),
+            "weight":       float(w[i]),
             "risk_contrib": float(rc[i]),
-            "vol_hist":    float(result["vols"][i] * 100.0),
+            "vol_hist":     float(result["vols"][i] * 100.0),
         }
         for i in range(len(result["classes"]))
-        if w[i] >= 0.001
+        if w[i] >= threshold
     ]
 
     return {
         "profile":        profile,
         "vol_target":     vt,
         "vol_realized":   vr,
+        "converged":      converged,
         "bucket_weights": bucket_weights,
         "asset_weights":  asset_weights,
     }
 
-result = build_spectrum(
-    n_profiles=100,
-    classes=["NTN-B 2035", "Ibovespa", "S&P 500"],
-    bucket_indices={"RF": [0], "RV": [1, 2]},
-    bucket_labels={"RF": "Renda Fixa", "RV": "Renda Variável"},
-    vols_pct={"NTN-B 2035": 8.5, "Ibovespa": 22.0, "S&P 500": 18.0},
-    intra_corrs={
-        "RF": np.array([[1.0]]),
-        "RV": np.array([[1.0, 0.45], [0.45, 1.0]]),
-    },
-    macro_corr=np.array([[1.0, 0.15], [0.15, 1.0]]),
-    max_weights=np.array([0.80, 0.50, 0.50]),
-    w_anchor_conservative=np.array([0.90, 0.05, 0.05]),
-    w_anchor_aggressive=np.array([0.10, 0.50, 0.40]),
-)
+if __name__ == "__main__":
+    result = build_spectrum(
+        n_profiles=100,
+        classes=[
+            "RF Pré Curta", "RF Pré Longa",
+            "RF Inflação Curta", "RF Inflação Longa",
+            "RF Inflação Crédito", "RF Pós Crédito",
+        ],
+        bucket_indices={"RF": [0, 1, 2, 3, 4, 5]},
+        bucket_labels={"RF": "Renda Fixa"},
+        vols_pct={
+            "RF Pré Curta":        8.5,
+            "RF Pré Longa":       22.0,
+            "RF Inflação Curta":  18.0,
+            "RF Inflação Longa":  18.0,
+            "RF Inflação Crédito": 18.0,
+            "RF Pós Crédito":     18.0,
+        },
+    )
 
-summary = get_profile_summary(result, profile=90)
-print(summary)
+    summary = get_profile_summary(result, profile=5)
+    print(summary)

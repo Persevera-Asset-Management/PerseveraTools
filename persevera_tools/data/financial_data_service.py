@@ -267,6 +267,8 @@ class FinancialDataService:
                 }
                 df = df[list(cols.keys())]
                 df = df.rename(columns=cols)
+                df['fund_total_value'] = df['fund_total_equity']
+                df['date'] = pd.to_datetime(df['date'], errors='coerce')
 
                 if df.empty:
                     self.logger.warning("No data retrieved from ANBIMA Fundos")
