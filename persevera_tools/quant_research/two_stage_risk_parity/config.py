@@ -91,10 +91,10 @@ class SpectrumConfig:
     macro_corr: np.ndarray
 
     # Parâmetros do motor
-    sigma_min_pct: float = 1.0
-    sigma_max_pct: float = 12
-    n_profiles: int = 10
-    min_weight_threshold: float = 0.005
+    sigma_min_pct: float
+    sigma_max_pct: float
+    n_profiles: int
+    min_weight_threshold: float
 
     # Distribuição não-uniforme de RC dentro de bucket (opcional)
     # intra_rc_weights[bucket] = array de pesos (soma > 0) para distribuir

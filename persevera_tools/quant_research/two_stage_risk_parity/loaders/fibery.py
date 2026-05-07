@@ -87,6 +87,10 @@ def load_from_fibery(status: Optional[str] = "Aprovada") -> SpectrumConfig:
         calibration_name=calib_row["name"],
         calibration_date=str(calib_row["data_calibracao"]),
         calibration_status=calib_row["status"],
+        sigma_min=calib_row["sigma_min"],
+        sigma_max=calib_row["sigma_max"],
+        n_profiles=calib_row["n_profiles"],
+        min_weight_threshold=calib_row["min_weight_threshold"],
     )
 
 
@@ -101,6 +105,10 @@ def load_calibration_by_name(calibration_name: str) -> SpectrumConfig:
         calibration_name=row["name"],
         calibration_date=str(row["data_calibracao"]),
         calibration_status=row["status"],
+        sigma_min=row["sigma_min"],
+        sigma_max=row["sigma_max"],
+        n_profiles=row["n_profiles"],
+        min_weight_threshold=row["min_weight_threshold"],
     )
 
 
@@ -122,6 +130,10 @@ def load_calibration_by_date(date: str) -> SpectrumConfig:
         calibration_name=row["name"],
         calibration_date=str(row["data_calibracao"]),
         calibration_status=row["status"],
+        sigma_min=row["sigma_min"],
+        sigma_max=row["sigma_max"],
+        n_profiles=row["n_profiles"],
+        min_weight_threshold=row["min_weight_threshold"],
     )
 
 
@@ -131,6 +143,10 @@ def _build_config_from_calibration(
     calibration_name: str,
     calibration_date: str,
     calibration_status: str,
+    sigma_min: float,
+    sigma_max: float,
+    n_profiles: int,
+    min_weight_threshold: float,
 ) -> SpectrumConfig:
     """
     Pull de todas as tabelas filhas da calibração e montagem da SpectrumConfig.
@@ -194,7 +210,7 @@ def _build_config_from_calibration(
             assets.append(AssetClass(
                 name=r["name"],
                 bucket=r["bucket"],
-                proxy=r["proxy"] or "",
+                proxy=r["proxy"] if pd.notna(r["proxy"]) else "",
                 default_vol=float(r["default_vol"]),
                 max_weight=float(r["max_weight"]),
                 max_rc=float(r["max_rc"]) if pd.notna(r["max_rc"]) else None,
@@ -238,6 +254,33 @@ def _build_config_from_calibration(
     # ── Matriz de correlação macro-bucket
     macro_corr = _build_macro_corr_matrix(bucket_order, macro_df)
 
+    # Hard validation: faixa de vol viável dado o universo
+    sigma_min_feas, sigma_max_feas = _compute_feasible_vol_range(
+        assets, intra_corrs, macro_corr,
+        {bk: [i for i, a in enumerate(assets) if a.bucket == bk] for bk in buckets},
+    )
+
+    if sigma_min < sigma_min_feas - 1e-6:
+        raise FiberyLoaderError(
+            f"Calibração '{calibration_name}': Sigma Min = {sigma_min*100:.4f}% "
+            f"é inviável dado o universo. Vol mínima atingível (min-variance "
+            f"long-only) = {sigma_min_feas*100:.4f}%. "
+            f"Ajuste Sigma Min no Fibery para >= {sigma_min_feas*100:.4f}%."
+        )
+
+    if sigma_max > sigma_max_feas + 1e-6:
+        raise FiberyLoaderError(
+            f"Calibração '{calibration_name}': Sigma Max = {sigma_max*100:.4f}% "
+            f"é inviável dado o universo. Vol máxima atingível = "
+            f"{sigma_max_feas*100:.4f}%."
+        )
+
+    if sigma_max <= sigma_min:
+        raise FiberyLoaderError(
+            f"Calibração '{calibration_name}': Sigma Max ({sigma_max*100:.2f}%) "
+            f"deve ser estritamente maior que Sigma Min ({sigma_min*100:.2f}%)."
+        )
+
     # ── Montar SpectrumConfig
     config = SpectrumConfig(
         assets=assets,
@@ -245,6 +288,10 @@ def _build_config_from_calibration(
         rc_targets=rc_targets,
         intra_corrs=intra_corrs,
         macro_corr=macro_corr,
+        sigma_min_pct=sigma_min * 100.0,        # ← converte fração → %
+        sigma_max_pct=sigma_max * 100.0,
+        n_profiles=int(n_profiles),
+        min_weight_threshold=float(min_weight_threshold),
         calibration_name=calibration_name,
         calibration_date=calibration_date,
         calibration_status=calibration_status,
@@ -274,10 +321,14 @@ def _read_calibrations() -> pd.DataFrame:
         ) from exc
 
     return _normalize_columns(df, {
-        "id": ["fibery/id", "id", "Id"],
-        "name": ["Inv-Rsrch-Quant/Name", "Name", "name"],
-        "data_calibracao": ["Inv-Rsrch-Quant/Data Calibração", "Data Calibração", "data_calibracao"],
-        "status": ["workflow/state", "State", "state", "Status"],
+        "id":                   ["fibery/id", "id", "Id"],
+        "name":                 ["Inv-Rsrch-Quant/Name", "Name", "name"],
+        "data_calibracao":      ["Inv-Rsrch-Quant/Data Calibração", "Data Calibração", "data_calibracao"],
+        "status":               ["workflow/state", "State", "state", "Status"],
+        "sigma_min":            ["Inv-Rsrch-Quant/Sigma Min", "Sigma Min", "sigma_min"],
+        "sigma_max":            ["Inv-Rsrch-Quant/Sigma Max", "Sigma Max", "sigma_max"],
+        "n_profiles":           ["Inv-Rsrch-Quant/N Profiles", "N Profiles", "n_profiles"],
+        "min_weight_threshold": ["Inv-Rsrch-Quant/Min Weight Threshold", "Min Weight Threshold", "min_weight_threshold"],
     }, table_name=DB_CALIBRATION)
 
 
@@ -476,6 +527,83 @@ def _build_macro_corr_matrix(
 
     return M
 
+
+# ── Cálculo da faixa de volatilidade viável ───────────────────────────────────
+
+def _compute_feasible_vol_range(
+    assets: list[AssetClass],
+    intra_corrs: dict[str, np.ndarray],
+    macro_corr: np.ndarray,
+    bucket_indices: dict[str, list[int]],
+) -> tuple[float, float]:
+    """
+    Calcula a faixa de volatilidade viável do universo via QP long-only:
+      sigma_min: min sqrt(w'Σw)  s.t. sum(w)=1, 0 ≤ w ≤ max_weight
+      sigma_max: max sqrt(w'Σw)  s.t. mesmas constraints
+
+    Retorna (sigma_min, sigma_max) em fração.
+    """
+    from scipy.optimize import minimize
+    from ..core import _build_full_corr, _build_cov
+
+    n = len(assets)
+    vols = np.array([a.default_vol for a in assets])
+    max_weights = np.array([a.max_weight for a in assets])
+    full_corr = _build_full_corr(bucket_indices, intra_corrs, macro_corr)
+    cov = _build_cov(vols, full_corr)
+
+    bounds = [(0.0, float(max_weights[i])) for i in range(n)]
+    constraints = [{"type": "eq", "fun": lambda w: w.sum() - 1}]
+
+    def vol_squared(w):
+        return float(w @ cov @ w)
+
+    # Min-variance: convexo, único ótimo
+    res_min = minimize(
+        vol_squared, np.ones(n) / n,
+        method="SLSQP", bounds=bounds, constraints=constraints,
+        options={"maxiter": 5_000, "ftol": 1e-14},
+    )
+    if not res_min.success:
+        raise FiberyLoaderError(
+            f"Falha ao calcular vol mínima viável: {res_min.message}"
+        )
+    sigma_min_feas = float(np.sqrt(max(res_min.fun, 0.0)))
+
+    # Max-variance: não-convexo (maximizar função convexa). Tenta múltiplos
+    # pontos iniciais — cada vértice de concentração e equal-weight.
+    starts = [np.eye(n)[i] * max_weights[i] for i in range(n)]
+    starts.append(np.ones(n) / n)
+
+    best_max = 0.0
+    for w0_raw in starts:
+        w0 = w0_raw.copy()
+        s = w0.sum()
+        if s <= 0:
+            continue
+        w0 = w0 / s
+        # Reclip para garantir bounds
+        w0 = np.clip(w0, [b[0] for b in bounds], [b[1] for b in bounds])
+        if w0.sum() <= 0:
+            continue
+        w0 = w0 / w0.sum()
+        try:
+            res = minimize(
+                lambda w: -vol_squared(w), w0,
+                method="SLSQP", bounds=bounds, constraints=constraints,
+                options={"maxiter": 5_000, "ftol": 1e-14},
+            )
+            if res.success:
+                v = float(np.sqrt(max(-res.fun, 0.0)))
+                if v > best_max:
+                    best_max = v
+        except Exception:
+            continue
+
+    if best_max == 0.0:
+        raise FiberyLoaderError("Falha ao calcular vol máxima viável do universo")
+
+    return sigma_min_feas, best_max
 
 # ── Utilitários ───────────────────────────────────────────────────────────────
 

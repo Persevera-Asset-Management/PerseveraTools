@@ -198,11 +198,16 @@ def _execute_fibery_page(
     max_timeout_retries: int = 3,
 ) -> Tuple[Optional[List[Any]], Dict[str, Any]]:
     """
-    Executes a single paginated Fibery query with retry logic for both field errors
-    and API timeouts.
+    Executes a single paginated Fibery query with retry logic for field errors,
+    secured-field permission errors, and API timeouts.
 
-    On field errors, attempts to correct the field selection in up to max_field_retries
-    attempts (enum/name → Space/Name → remove field).
+    On primitive-field errors, attempts to correct the field selection in up to
+    max_field_retries attempts (enum/name → Space/Name → remove field).
+
+    On secured-field errors (when the API token lacks permission to read a
+    sub-field via dereference), iteratively downgrades the offending relation
+    selection from ``[field, "<Space>/Name"]`` to ``[field, "fibery/id"]``,
+    falling back to removing the field if the downgrade does not help.
 
     On timeout errors, retries with exponential backoff (2s, 4s, 8s, ...).
 
@@ -212,8 +217,11 @@ def _execute_fibery_page(
     """
     field_retries = 0
     timeout_retries = 0
+    secured_retries = 0
+    max_secured_retries = max(20, len(field_selection))
+    secured_attempted: set = set()
 
-    while field_retries < max_field_retries:
+    while field_retries < max_field_retries and secured_retries < max_secured_retries:
         query: Dict[str, Any] = {
             "q/from": canonical_name,
             "q/select": field_selection,
@@ -290,6 +298,101 @@ def _execute_fibery_page(
                             logger.error(f"Could not find alias for problematic field: {problematic_field}")
                             return None, field_selection
 
+                # --- Secured-field permission error: downgrade or remove relation selections ---
+                # Fibery returns this when the API token lacks permission to read the
+                # sub-field accessed via dereference (e.g. `[relation, "Space/Name"]`),
+                # asking us to use a sub-query expression instead.
+                lowered_message = error_message.lower()
+                if "secured field" in lowered_message or "use sub query expression" in lowered_message:
+                    error_data = error_info.get("data", {})
+                    field_path = error_data.get("field") or error_data.get("path")
+                    problematic_field: Optional[str] = None
+                    if isinstance(field_path, list) and field_path:
+                        problematic_field = field_path[0]
+                    elif isinstance(field_path, str):
+                        problematic_field = field_path
+
+                    def _downgrade_or_remove(alias: str) -> str:
+                        spec = field_selection[alias]
+                        if (
+                            isinstance(spec, list)
+                            and len(spec) == 2
+                            and spec[1] != "fibery/id"
+                        ):
+                            field_selection[alias] = [spec[0], "fibery/id"]
+                            return "downgrade"
+                        del field_selection[alias]
+                        return "remove"
+
+                    # 1) If the API tells us the offending field, fix only that one.
+                    if problematic_field:
+                        alias_to_fix = next(
+                            (alias for alias, spec in field_selection.items()
+                             if isinstance(spec, list) and spec and spec[0] == problematic_field),
+                            None,
+                        )
+                        if alias_to_fix:
+                            action = _downgrade_or_remove(alias_to_fix)
+                            logger.warning(
+                                f"Secured-field error on '{problematic_field}'. "
+                                f"{'Downgraded selection to fibery/id' if action == 'downgrade' else 'Removed field'}."
+                            )
+                            secured_attempted.add(alias_to_fix)
+                            secured_retries += 1
+                            timeout_retries = 0
+                            continue
+
+                    # 2) Fall back: downgrade all `[field, '<Space>/Name']` selections
+                    #    that haven't been touched yet. One-shot bulk fix.
+                    bulk_targets = [
+                        alias for alias, spec in field_selection.items()
+                        if (
+                            alias not in secured_attempted
+                            and isinstance(spec, list)
+                            and len(spec) == 2
+                            and spec[1] not in ("fibery/id", "enum/name")
+                        )
+                    ]
+                    if bulk_targets:
+                        for alias in bulk_targets:
+                            spec = field_selection[alias]
+                            field_selection[alias] = [spec[0], "fibery/id"]
+                            secured_attempted.add(alias)
+                        logger.warning(
+                            f"Secured-field error (no specific field info). Downgraded "
+                            f"{len(bulk_targets)} relation selection(s) to fibery/id."
+                        )
+                        secured_retries += 1
+                        timeout_retries = 0
+                        continue
+
+                    # 3) Last resort: remove relation selections that were already
+                    #    downgraded to fibery/id.
+                    remove_targets = [
+                        alias for alias, spec in field_selection.items()
+                        if (
+                            isinstance(spec, list)
+                            and len(spec) == 2
+                            and spec[1] == "fibery/id"
+                        )
+                    ]
+                    if remove_targets:
+                        for alias in remove_targets:
+                            del field_selection[alias]
+                        logger.warning(
+                            f"Secured-field error persists: removed "
+                            f"{len(remove_targets)} relation field(s)."
+                        )
+                        secured_retries += 1
+                        timeout_retries = 0
+                        continue
+
+                    logger.error(
+                        "Secured-field error and no further downgrade options. "
+                        f"Original error: {error_message}"
+                    )
+                    return None, field_selection
+
                 logger.error(f"Fibery API error: {error_message}")
                 logger.debug(f"Error details: {error_info}")
                 return None, field_selection
@@ -301,7 +404,11 @@ def _execute_fibery_page(
             logger.error(f"Request error at offset {offset}: {e}", exc_info=True)
             return None, field_selection
 
-    logger.error(f"Failed to fix field selection after {max_field_retries} retries.")
+    logger.error(
+        f"Failed to fix field selection after retries "
+        f"(field={field_retries}/{max_field_retries}, "
+        f"secured={secured_retries}/{max_secured_retries})."
+    )
     return None, field_selection
 
 def read_fibery(
