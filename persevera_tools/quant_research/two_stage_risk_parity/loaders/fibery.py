@@ -243,7 +243,15 @@ def _build_config_from_calibration(
     full_corr = _build_full_corr_matrix(assets, corr_df)
 
     # Hard validation: faixa de vol viável dado o universo
-    sigma_min_feas, sigma_max_feas = _compute_feasible_vol_range(assets, full_corr)
+    from ..core import _feasible_vol_range
+    try:
+        sigma_min_feas, sigma_max_feas = _feasible_vol_range(
+            vols=np.array([a.default_vol for a in assets]),
+            max_weights=np.array([a.max_weight for a in assets]),
+            full_corr=full_corr,
+        )
+    except ValueError as exc:
+        raise FiberyLoaderError(str(exc)) from exc
 
     if sigma_min < sigma_min_feas - 1e-6:
         raise FiberyLoaderError(
@@ -477,80 +485,6 @@ def _build_full_corr_matrix(
 
     return M
 
-
-# ── Cálculo da faixa de volatilidade viável ───────────────────────────────────
-
-def _compute_feasible_vol_range(
-    assets: list[AssetClass],
-    full_corr: np.ndarray,
-) -> tuple[float, float]:
-    """
-    Calcula a faixa de volatilidade viável do universo via QP long-only:
-      sigma_min: min sqrt(w'Σw)  s.t. sum(w)=1, 0 ≤ w ≤ max_weight
-      sigma_max: max sqrt(w'Σw)  s.t. mesmas constraints
-
-    Retorna (sigma_min, sigma_max) em fração.
-    """
-    from scipy.optimize import minimize
-    from ..core import _build_cov
-
-    n = len(assets)
-    vols = np.array([a.default_vol for a in assets])
-    max_weights = np.array([a.max_weight for a in assets])
-    cov = _build_cov(vols, full_corr)
-
-    bounds = [(0.0, float(max_weights[i])) for i in range(n)]
-    constraints = [{"type": "eq", "fun": lambda w: w.sum() - 1}]
-
-    def vol_squared(w):
-        return float(w @ cov @ w)
-
-    # Min-variance: convexo, único ótimo
-    res_min = minimize(
-        vol_squared, np.ones(n) / n,
-        method="SLSQP", bounds=bounds, constraints=constraints,
-        options={"maxiter": 5_000, "ftol": 1e-14},
-    )
-    if not res_min.success:
-        raise FiberyLoaderError(
-            f"Falha ao calcular vol mínima viável: {res_min.message}"
-        )
-    sigma_min_feas = float(np.sqrt(max(res_min.fun, 0.0)))
-
-    # Max-variance: não-convexo (maximizar função convexa). Tenta múltiplos
-    # pontos iniciais — cada vértice de concentração e equal-weight.
-    starts = [np.eye(n)[i] * max_weights[i] for i in range(n)]
-    starts.append(np.ones(n) / n)
-
-    best_max = 0.0
-    for w0_raw in starts:
-        w0 = w0_raw.copy()
-        s = w0.sum()
-        if s <= 0:
-            continue
-        w0 = w0 / s
-        # Reclip para garantir bounds
-        w0 = np.clip(w0, [b[0] for b in bounds], [b[1] for b in bounds])
-        if w0.sum() <= 0:
-            continue
-        w0 = w0 / w0.sum()
-        try:
-            res = minimize(
-                lambda w: -vol_squared(w), w0,
-                method="SLSQP", bounds=bounds, constraints=constraints,
-                options={"maxiter": 5_000, "ftol": 1e-14},
-            )
-            if res.success:
-                v = float(np.sqrt(max(-res.fun, 0.0)))
-                if v > best_max:
-                    best_max = v
-        except Exception:
-            continue
-
-    if best_max == 0.0:
-        raise FiberyLoaderError("Falha ao calcular vol máxima viável do universo")
-
-    return sigma_min_feas, best_max
 
 # ── Utilitários ───────────────────────────────────────────────────────────────
 

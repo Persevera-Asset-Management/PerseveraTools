@@ -365,6 +365,106 @@ def _rc_pct_at(w: np.ndarray, cov: np.ndarray, idx: int) -> float:
     return float(rc[idx] / total)
 
 
+# ── Faixa de volatilidade viável do universo ──────────────────────────────────
+
+def _feasible_vol_range(
+    vols: np.ndarray,
+    max_weights: np.ndarray,
+    full_corr: np.ndarray,
+) -> tuple[float, float]:
+    """
+    Versão de baixo nível: opera direto sobre vols, max_weights e full_corr.
+
+    QP long-only:
+      sigma_min: min sqrt(w'Σw)  s.t. sum(w)=1, 0 ≤ w ≤ max_weight_i
+      sigma_max: max sqrt(w'Σw)  s.t. mesmas constraints
+
+    Retorna (sigma_min, sigma_max) em FRAÇÃO.
+    """
+    n = len(vols)
+    cov = _build_cov(vols, full_corr)
+
+    bounds = [(0.0, float(max_weights[i])) for i in range(n)]
+    constraints = [{"type": "eq", "fun": lambda w: w.sum() - 1}]
+
+    def vol_squared(w):
+        return float(w @ cov @ w)
+
+    # Min-variance: convexo, único ótimo
+    res_min = minimize(
+        vol_squared, np.ones(n) / n,
+        method="SLSQP", bounds=bounds, constraints=constraints,
+        options={"maxiter": 5_000, "ftol": 1e-14},
+    )
+    if not res_min.success:
+        raise ValueError(f"Falha ao calcular vol mínima viável: {res_min.message}")
+    sigma_min_feas = float(np.sqrt(max(res_min.fun, 0.0)))
+
+    # Max-variance: não-convexo (maximizar função convexa). Tenta múltiplos
+    # pontos iniciais — cada vértice de concentração e equal-weight.
+    starts = [np.eye(n)[i] * max_weights[i] for i in range(n)]
+    starts.append(np.ones(n) / n)
+
+    best_max = 0.0
+    for w0_raw in starts:
+        w0 = w0_raw.copy()
+        s = w0.sum()
+        if s <= 0:
+            continue
+        w0 = w0 / s
+        w0 = np.clip(w0, [b[0] for b in bounds], [b[1] for b in bounds])
+        if w0.sum() <= 0:
+            continue
+        w0 = w0 / w0.sum()
+        try:
+            res = minimize(
+                lambda w: -vol_squared(w), w0,
+                method="SLSQP", bounds=bounds, constraints=constraints,
+                options={"maxiter": 5_000, "ftol": 1e-14},
+            )
+            if res.success:
+                v = float(np.sqrt(max(-res.fun, 0.0)))
+                if v > best_max:
+                    best_max = v
+        except Exception:
+            continue
+
+    if best_max == 0.0:
+        raise ValueError("Falha ao calcular vol máxima viável do universo")
+
+    return sigma_min_feas, best_max
+
+
+def compute_feasible_vol_range(config: SpectrumConfig) -> tuple[float, float]:
+    """
+    Calcula a faixa de volatilidade viável do universo da `config`:
+      sigma_min: vol mínima alcançável (min-variance long-only)
+      sigma_max: vol máxima alcançável (concentração extrema permitida pelos
+                 max_weight de cada classe)
+
+    Retorna (sigma_min, sigma_max) em FRAÇÃO (ex.: 0.045 = 4.5%).
+    Para obter em %, multiplique por 100.
+
+    Útil para descobrir a faixa atingível dado vol, correlação e bounds —
+    sem precisar montar o espectro inteiro.
+
+    Levanta
+    -------
+    ValueError : se o solver não convergir em algum dos dois extremos.
+
+    Exemplo
+    -------
+    >>> config = load_from_fibery()
+    >>> sigma_min, sigma_max = compute_feasible_vol_range(config)
+    >>> print(f"Vol mínima: {sigma_min*100:.2f}%  |  Vol máxima: {sigma_max*100:.2f}%")
+    """
+    return _feasible_vol_range(
+        vols=config.vols_array,
+        max_weights=config.max_weights_array,
+        full_corr=config.full_corr,
+    )
+
+
 # ── Função principal ──────────────────────────────────────────────────────────
 
 def build_spectrum(config: SpectrumConfig) -> dict:
