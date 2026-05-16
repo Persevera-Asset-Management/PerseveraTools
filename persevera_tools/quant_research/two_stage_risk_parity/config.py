@@ -7,7 +7,7 @@ externos converge para este dataclass; o motor consome apenas isso.
 """
 
 from __future__ import annotations
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 import numpy as np
 
@@ -66,7 +66,7 @@ class SpectrumConfig:
     por um loader, mas pode ser construído manualmente para testes/cenários.
 
     Campos obrigatórios:
-      assets, buckets, rc_targets, intra_corrs, macro_corr
+      assets, buckets, rc_targets, full_corr
 
     Campos opcionais (com defaults razoáveis):
       sigma_min_pct, sigma_max_pct, n_profiles, min_weight_threshold,
@@ -84,11 +84,9 @@ class SpectrumConfig:
     # RC-targets nos endpoints — chave é o nome do bucket
     rc_targets: dict[str, RCTarget]
 
-    # Matrizes de correlação
-    #   intra_corrs[bucket]: matriz (n_b × n_b) na ordem das classes do bucket
-    #   macro_corr: matriz (k × k) entre buckets, na ordem de `buckets`
-    intra_corrs: dict[str, np.ndarray]
-    macro_corr: np.ndarray
+    # Matriz de correlação completa (n × n), na ordem de `assets`.
+    # Contém TODOS os pares (intra-bucket e cross-bucket).
+    full_corr: np.ndarray
 
     # Parâmetros do motor
     sigma_min_pct: float
@@ -226,25 +224,13 @@ class SpectrumConfig:
                 if not 0.0 <= v <= 1.0:
                     raise ValueError(f"rc_targets['{bk}'].{attr} = {v} fora de [0,1]")
 
-        # Intra corrs: shape e PSD
-        for bk, idxs in bi.items():
-            if bk not in self.intra_corrs:
-                raise ValueError(f"intra_corrs['{bk}'] ausente")
-            n_b = len(idxs)
-            shape = self.intra_corrs[bk].shape
-            if shape != (n_b, n_b):
-                raise ValueError(
-                    f"intra_corrs['{bk}'] tem shape {shape}, esperado ({n_b}, {n_b})"
-                )
-            _check_correlation_matrix(self.intra_corrs[bk], f"intra_corrs['{bk}']")
-
-        # Macro corr: shape e PSD
-        n_b = self.n_buckets
-        if self.macro_corr.shape != (n_b, n_b):
+        # Full corr: shape e PSD (cobre todos os pares intra + cross-bucket)
+        n = self.n_assets
+        if self.full_corr.shape != (n, n):
             raise ValueError(
-                f"macro_corr tem shape {self.macro_corr.shape}, esperado ({n_b}, {n_b})"
+                f"full_corr tem shape {self.full_corr.shape}, esperado ({n}, {n})"
             )
-        _check_correlation_matrix(self.macro_corr, "macro_corr")
+        _check_correlation_matrix(self.full_corr, "full_corr")
 
         # intra_rc_weights (se fornecido)
         if self.intra_rc_weights is not None:

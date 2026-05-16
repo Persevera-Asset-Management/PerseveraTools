@@ -46,28 +46,6 @@ def _build_cov(vols: np.ndarray, corr: np.ndarray) -> np.ndarray:
     return D @ corr @ D
 
 
-def _build_full_corr(
-    bucket_indices: dict[str, list[int]],
-    intra_corrs: dict[str, np.ndarray],
-    macro_corr: np.ndarray,
-) -> np.ndarray:
-    """Combina blocos intra-bucket com correlação cross-bucket constante."""
-    n_assets = sum(len(idxs) for idxs in bucket_indices.values())
-    corr = np.eye(n_assets)
-    bkeys = list(bucket_indices.keys())
-
-    for a, bk_a in enumerate(bkeys):
-        ia = bucket_indices[bk_a]
-        corr[np.ix_(ia, ia)] = intra_corrs[bk_a]
-        for b in range(a + 1, len(bkeys)):
-            ib = bucket_indices[bkeys[b]]
-            rho = float(macro_corr[a, b])
-            corr[np.ix_(ia, ib)] = rho
-            corr[np.ix_(ib, ia)] = rho
-
-    return corr
-
-
 def _vol_curve(sigma_min: float, sigma_max: float, n_profiles: int) -> np.ndarray:
     """Curva exponencial: σ(p) = σ_min · e^[k·(p−1)]."""
     if n_profiles == 1:
@@ -110,32 +88,62 @@ def _solve_rp(n: int, cov: np.ndarray, bounds=None) -> np.ndarray:
     return result.x
 
 
+def _derive_macro_cov(
+    cov: np.ndarray,
+    bucket_indices: dict[str, list[int]],
+    w_bkts: dict[str, np.ndarray],
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Deriva a matriz de covariância k × k entre portfólios de bucket a partir
+    da matriz de covariância completa e dos pesos intra-bucket.
+
+    Para buckets A, B com pesos intra w_A, w_B e blocos de covariância Σ_{AB}:
+        cov_macro[A, B] = w_A^T · Σ_{AB} · w_B
+        var_macro[A]    = w_A^T · Σ_{AA} · w_A
+
+    Retorna (cov_macro, bvols) onde bvols[k] = sqrt(var_macro[k]).
+    """
+    bucket_keys = list(bucket_indices.keys())
+    k = len(bucket_keys)
+    cov_macro = np.zeros((k, k))
+    for a, bk_a in enumerate(bucket_keys):
+        ia = bucket_indices[bk_a]
+        w_a = w_bkts[bk_a]
+        for b, bk_b in enumerate(bucket_keys):
+            ib = bucket_indices[bk_b]
+            w_b = w_bkts[bk_b]
+            cov_macro[a, b] = float(w_a @ cov[np.ix_(ia, ib)] @ w_b)
+    cov_macro = 0.5 * (cov_macro + cov_macro.T)
+    bvols = np.sqrt(np.clip(np.diag(cov_macro), 0.0, None))
+    return cov_macro, bvols
+
+
 def _compute_hrp(
-    vols: np.ndarray,
-    macro_corr: np.ndarray,
-    intra_corrs: dict[str, np.ndarray],
+    cov: np.ndarray,
     bucket_indices: dict[str, list[int]],
     intra_bounds: dict[str, Optional[float]],
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Retorna (w_hrp, w_macro) — usado apenas como referência diagnóstica."""
+    """
+    HRP de dois níveis (referência diagnóstica):
+      1. Resolve RP intra-bucket usando o sub-bloco diagonal de `cov`.
+      2. Deriva COV macro k×k a partir dos pesos intra e dos blocos
+         cross-bucket de `cov` (sem simplificação cross-bucket).
+      3. Resolve RP macro.
+      4. Combina: w_hrp[i] = w_macro[bk(i)] · w_intra[bk(i)][i].
+    """
     bucket_keys = list(bucket_indices.keys())
     n_buckets = len(bucket_keys)
     n_assets = sum(len(v) for v in bucket_indices.values())
 
     w_bkts: dict[str, np.ndarray] = {}
-    bvols = np.zeros(n_buckets)
-    for k_idx, bkey in enumerate(bucket_keys):
+    for bkey in bucket_keys:
         idxs = bucket_indices[bkey]
-        v_bkt = vols[idxs]
-        C_bkt = intra_corrs[bkey]
-        COV_bkt = _build_cov(v_bkt, C_bkt)
+        COV_bkt = cov[np.ix_(idxs, idxs)]
         intra_max = intra_bounds.get(bkey)
         bnds = [(0.01, float(intra_max))] * len(idxs) if intra_max is not None else None
-        w_bkt = _solve_rp(len(idxs), COV_bkt, bnds)
-        w_bkts[bkey] = w_bkt
-        bvols[k_idx] = _portfolio_vol(w_bkt, COV_bkt)
+        w_bkts[bkey] = _solve_rp(len(idxs), COV_bkt, bnds)
 
-    COV_macro = _build_cov(bvols, macro_corr)
+    COV_macro, _ = _derive_macro_cov(cov, bucket_indices, w_bkts)
     w_macro = _solve_rp(n_buckets, COV_macro, [(0.05, 0.85)] * n_buckets)
 
     w_hrp = np.zeros(n_assets)
@@ -391,13 +399,11 @@ def build_spectrum(config: SpectrumConfig) -> dict:
     vols = config.vols_array
 
     # ── Matriz de covariância ────────────────────────────────────────────
-    full_corr = _build_full_corr(bucket_indices, config.intra_corrs, config.macro_corr)
-    cov = _build_cov(vols, full_corr)
+    cov = _build_cov(vols, config.full_corr)
 
     # ── HRP de referência (diagnóstico) ──────────────────────────────────
     w_hrp, w_macro = _compute_hrp(
-        vols, config.macro_corr, config.intra_corrs,
-        bucket_indices, config.intra_bounds,
+        cov, bucket_indices, config.intra_bounds,
     )
     vol_hrp = _portfolio_vol(w_hrp, cov) * 100.0
 

@@ -179,3 +179,5 @@ cython_debug/
 .cursor\rules\codacy.mdc
 
 persevera_tools/data/providers/ws_ibkr.py
+
+persevera_tools/data/factor_zoo/

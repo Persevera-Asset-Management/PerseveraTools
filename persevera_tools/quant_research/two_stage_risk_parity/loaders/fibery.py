@@ -6,8 +6,7 @@ Pull da Calibração mais recente (ou específica por ID/data) das tabelas:
   • Inv-Rsrch-Quant/Classes de Ativo (catálogo)
   • Inv-Rsrch-Quant/Parâmetros de Classe (vol/maxw/maxrc)
   • Inv-Rsrch-Quant/RC Target por Bucket (RC P1/P10)
-  • Inv-Rsrch-Quant/Correlação Intra-Classe (rho intra-bucket)
-  • Inv-Rsrch-Quant/Correlação Macro-Bucket (rho cross-bucket)
+  • Inv-Rsrch-Quant/Correlação Cross-Classe (rho para TODOS os pares de classes)
 
 Estratégia de falha: explícita. Se qualquer pull falhar, a calibração estiver
 incompleta, ou os dados estiverem inconsistentes, levanta exception com
@@ -44,8 +43,7 @@ DB_CALIBRATION    = f"{SPACE_NAME}/Calibração de Mercado"
 DB_ASSET_CLASS    = f"{SPACE_NAME}/Classes de Ativo"
 DB_PARAMETERS     = f"{SPACE_NAME}/Parâmetros de Classe"
 DB_RC_TARGET      = f"{SPACE_NAME}/RC Target por Bucket"
-DB_CORR_INTRA     = f"{SPACE_NAME}/Correlação Intra-Classe"
-DB_CORR_MACRO     = f"{SPACE_NAME}/Correlação Macro-Bucket"
+DB_CORR_CLASSES   = f"{SPACE_NAME}/Correlação Cross-Classe"
 
 
 class FiberyLoaderError(Exception):
@@ -168,18 +166,11 @@ def _build_config_from_calibration(
             f"Calibração '{calibration_name}' não tem RC Targets associados"
         )
 
-    # 4. Correlações intra-classe desta calibração
-    intra_df = _read_corr_intra(calibration_name)
-    if intra_df.empty:
+    # 4. Correlações entre classes desta calibração (todos os pares)
+    corr_df = _read_corr_classes(calibration_name)
+    if corr_df.empty:
         raise FiberyLoaderError(
-            f"Calibração '{calibration_name}' não tem Correlações Intra-Classe"
-        )
-
-    # 5. Correlações macro-bucket desta calibração
-    macro_df = _read_corr_macro(calibration_name)
-    if macro_df.empty:
-        raise FiberyLoaderError(
-            f"Calibração '{calibration_name}' não tem Correlações Macro-Bucket"
+            f"Calibração '{calibration_name}' não tem Correlações Cross-Classe"
         )
 
     # ── Montar AssetClass list (mantendo ordem do catálogo)
@@ -248,17 +239,11 @@ def _build_config_from_calibration(
             rc_p10=float(r["rc_p10"]),
         )
 
-    # ── Matriz de correlação intra-classe (uma por bucket)
-    intra_corrs = _build_intra_corr_matrices(assets, bucket_order, intra_df)
-
-    # ── Matriz de correlação macro-bucket
-    macro_corr = _build_macro_corr_matrix(bucket_order, macro_df)
+    # ── Matriz de correlação completa (n × n, todos os pares)
+    full_corr = _build_full_corr_matrix(assets, corr_df)
 
     # Hard validation: faixa de vol viável dado o universo
-    sigma_min_feas, sigma_max_feas = _compute_feasible_vol_range(
-        assets, intra_corrs, macro_corr,
-        {bk: [i for i, a in enumerate(assets) if a.bucket == bk] for bk in buckets},
-    )
+    sigma_min_feas, sigma_max_feas = _compute_feasible_vol_range(assets, full_corr)
 
     if sigma_min < sigma_min_feas - 1e-6:
         raise FiberyLoaderError(
@@ -286,8 +271,7 @@ def _build_config_from_calibration(
         assets=assets,
         buckets=buckets,
         rc_targets=rc_targets,
-        intra_corrs=intra_corrs,
-        macro_corr=macro_corr,
+        full_corr=full_corr,
         sigma_min_pct=sigma_min * 100.0,        # ← converte fração → %
         sigma_max_pct=sigma_max * 100.0,
         n_profiles=int(n_profiles),
@@ -395,13 +379,13 @@ def _read_rc_targets(calibration_name: str) -> pd.DataFrame:
     return df[df["calibration_name"] == calibration_name].copy()
 
 
-def _read_corr_intra(calibration_name: str) -> pd.DataFrame:
-    """Lê Correlação Intra-Classe. Filtra pela calibração."""
+def _read_corr_classes(calibration_name: str) -> pd.DataFrame:
+    """Lê Correlação Cross-Classe (todos os pares). Filtra pela calibração."""
     try:
-        df = read_fibery(DB_CORR_INTRA)
+        df = read_fibery(DB_CORR_CLASSES)
     except Exception as exc:
         raise FiberyLoaderError(
-            f"Falha ao ler '{DB_CORR_INTRA}' do Fibery: {exc}"
+            f"Falha ao ler '{DB_CORR_CLASSES}' do Fibery: {exc}"
         ) from exc
 
     df = _normalize_columns(df, {
@@ -409,121 +393,87 @@ def _read_corr_intra(calibration_name: str) -> pd.DataFrame:
         "classe_a": ["Classe A", "classe_a"],
         "classe_b": ["Classe B", "classe_b"],
         "rho": ["Rho", "rho"],
-    }, table_name=DB_CORR_INTRA)
+    }, table_name=DB_CORR_CLASSES)
 
     return df[df["calibration_name"] == calibration_name].copy()
 
+# ── Construção da matriz de correlação ─────────────────────────────────────────
 
-def _read_corr_macro(calibration_name: str) -> pd.DataFrame:
-    """Lê Correlação Macro-Bucket. Filtra pela calibração."""
-    try:
-        df = read_fibery(DB_CORR_MACRO)
-    except Exception as exc:
-        raise FiberyLoaderError(
-            f"Falha ao ler '{DB_CORR_MACRO}' do Fibery: {exc}"
-        ) from exc
-
-    df = _normalize_columns(df, {
-        "calibration_name": ["Calibração", "calibracao_id"],
-        "bucket_a": ["Bucket A", "bucket_a"],
-        "bucket_b": ["Bucket B", "bucket_b"],
-        "rho": ["Rho", "rho"],
-    }, table_name=DB_CORR_MACRO)
-
-    return df[df["calibration_name"] == calibration_name].copy()
-
-
-# ── Construção das matrizes a partir dos pares ────────────────────────────────
-
-def _build_intra_corr_matrices(
+def _build_full_corr_matrix(
     assets: list[AssetClass],
-    bucket_order: list[str],
-    intra_df: pd.DataFrame,
-) -> dict[str, np.ndarray]:
+    corr_df: pd.DataFrame,
+) -> np.ndarray:
     """
-    Para cada bucket, monta matriz n_b × n_b a partir dos pares (i ≤ j) na
-    base. Diagonal = 1, e par (j, i) é espelhado de (i, j).
+    Monta matriz n × n a partir dos pares cadastrados em DB_CORR_CLASSES,
+    na ordem de `assets`. Diagonal = 1; par (j, i) é espelhado de (i, j).
 
-    `intra_df` tem colunas: classe_a (id ou nome), classe_b, rho.
+    `corr_df` tem colunas: classe_a, classe_b, rho.
+
+    Validação dura (fail-loud):
+      • Todo par (i, j) com i < j deve estar presente.
+      • Não pode haver duplicatas com rho conflitante.
+      • Classes referenciadas devem existir no universo.
     """
-    # Mapeia cada classe → índice global e bucket
-    class_to_idx_in_bucket: dict[str, dict[str, int]] = {bk: {} for bk in bucket_order}
-    bucket_classes: dict[str, list[str]] = {bk: [] for bk in bucket_order}
-    for a in assets:
-        idx = len(bucket_classes[a.bucket])
-        class_to_idx_in_bucket[a.bucket][a.name] = idx
-        bucket_classes[a.bucket].append(a.name)
+    n = len(assets)
+    name_to_idx = {a.name: i for i, a in enumerate(assets)}
+    M = np.eye(n)
 
-    # Inicializa matrizes identidade
-    matrices: dict[str, np.ndarray] = {
-        bk: np.eye(len(bucket_classes[bk])) for bk in bucket_order
-    }
+    # Conjunto de pares preenchidos (em forma normalizada: tupla ordenada)
+    seen: dict[tuple[int, int], float] = {}
 
-    # Determina se classe_a/classe_b são IDs ou nomes (depende do read_fibery)
-    # Tenta primeiro como nome (mais legível); se não bater, tenta como ID.
-    name_to_bucket: dict[str, str] = {a.name: a.bucket for a in assets}
-
-    for _, row in intra_df.iterrows():
+    for _, row in corr_df.iterrows():
         ca = row["classe_a"]
         cb = row["classe_b"]
         rho = float(row["rho"])
 
-        # Resolve para nome se vier como dict (relação) ou como string
         ca_name = _resolve_relation_value(ca, assets)
         cb_name = _resolve_relation_value(cb, assets)
 
         if ca_name is None or cb_name is None:
             raise FiberyLoaderError(
-                f"Não consegui resolver par de correlação intra: ({ca}, {cb})"
+                f"Não consegui resolver par de correlação: ({ca}, {cb})"
             )
-
-        bk_a = name_to_bucket.get(ca_name)
-        bk_b = name_to_bucket.get(cb_name)
-        if bk_a != bk_b:
+        if ca_name not in name_to_idx or cb_name not in name_to_idx:
             raise FiberyLoaderError(
-                f"Correlação Intra-Classe entre classes de buckets diferentes: "
-                f"'{ca_name}' ({bk_a}) × '{cb_name}' ({bk_b}). "
-                f"Use Correlação Macro-Bucket para pares cross-bucket."
+                f"Par de correlação referencia classe inexistente no universo: "
+                f"('{ca_name}', '{cb_name}')"
             )
 
-        idx_a = class_to_idx_in_bucket[bk_a][ca_name]
-        idx_b = class_to_idx_in_bucket[bk_a][cb_name]
-        matrices[bk_a][idx_a, idx_b] = rho
-        matrices[bk_a][idx_b, idx_a] = rho
+        i = name_to_idx[ca_name]
+        j = name_to_idx[cb_name]
+        if i == j:
+            # Diagonal: deve ser 1.0 (tolerância numérica)
+            if abs(rho - 1.0) > 1e-9:
+                raise FiberyLoaderError(
+                    f"Par diagonal ('{ca_name}','{cb_name}') tem rho={rho}, "
+                    f"esperado 1.0"
+                )
+            continue
 
-    return matrices
-
-
-def _build_macro_corr_matrix(
-    bucket_order: list[str],
-    macro_df: pd.DataFrame,
-) -> np.ndarray:
-    """
-    Monta matriz k × k entre buckets a partir dos pares (i ≤ j).
-    """
-    n = len(bucket_order)
-    M = np.eye(n)
-    bk_to_idx = {bk: i for i, bk in enumerate(bucket_order)}
-
-    for _, row in macro_df.iterrows():
-        ba = _resolve_bucket_value(row["bucket_a"])
-        bb = _resolve_bucket_value(row["bucket_b"])
-        rho = float(row["rho"])
-
-        if ba is None or bb is None:
+        key = (min(i, j), max(i, j))
+        if key in seen and abs(seen[key] - rho) > 1e-9:
             raise FiberyLoaderError(
-                f"Não consegui resolver par macro: ({row['bucket_a']}, {row['bucket_b']})"
+                f"Par ('{ca_name}','{cb_name}') aparece duplicado com rho "
+                f"conflitante: {seen[key]} vs {rho}"
             )
+        seen[key] = rho
+        M[i, j] = rho
+        M[j, i] = rho
 
-        if ba not in bk_to_idx or bb not in bk_to_idx:
-            raise FiberyLoaderError(
-                f"Bucket '{ba}' ou '{bb}' não está na lista de buckets: {bucket_order}"
-            )
+    # ── Completude: todos os pares i<j devem estar presentes ────────────
+    missing: list[tuple[str, str]] = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            if (i, j) not in seen:
+                missing.append((assets[i].name, assets[j].name))
 
-        ia = bk_to_idx[ba]
-        ib = bk_to_idx[bb]
-        M[ia, ib] = rho
-        M[ib, ia] = rho
+    if missing:
+        preview = ", ".join(f"({a}, {b})" for a, b in missing[:10])
+        more = f" ... e mais {len(missing) - 10}" if len(missing) > 10 else ""
+        raise FiberyLoaderError(
+            f"Correlações Cross-Classe incompletas: faltam {len(missing)} "
+            f"pares no Fibery. Exemplos: {preview}{more}"
+        )
 
     return M
 
@@ -532,9 +482,7 @@ def _build_macro_corr_matrix(
 
 def _compute_feasible_vol_range(
     assets: list[AssetClass],
-    intra_corrs: dict[str, np.ndarray],
-    macro_corr: np.ndarray,
-    bucket_indices: dict[str, list[int]],
+    full_corr: np.ndarray,
 ) -> tuple[float, float]:
     """
     Calcula a faixa de volatilidade viável do universo via QP long-only:
@@ -544,12 +492,11 @@ def _compute_feasible_vol_range(
     Retorna (sigma_min, sigma_max) em fração.
     """
     from scipy.optimize import minimize
-    from ..core import _build_full_corr, _build_cov
+    from ..core import _build_cov
 
     n = len(assets)
     vols = np.array([a.default_vol for a in assets])
     max_weights = np.array([a.max_weight for a in assets])
-    full_corr = _build_full_corr(bucket_indices, intra_corrs, macro_corr)
     cov = _build_cov(vols, full_corr)
 
     bounds = [(0.0, float(max_weights[i])) for i in range(n)]
@@ -659,17 +606,6 @@ def _resolve_relation_value(value, assets: list[AssetClass]) -> Optional[str]:
                 return a.name
         # Não bateu como nome — pode ser ID
         return value  # devolve a string e deixa o caller validar
-    if isinstance(value, dict):
-        return value.get("Name") or value.get("name")
-    return None
-
-
-def _resolve_bucket_value(value) -> Optional[str]:
-    """Resolve um valor de campo de relação de bucket para nome."""
-    if value is None or (isinstance(value, float) and np.isnan(value)):
-        return None
-    if isinstance(value, str):
-        return value
     if isinstance(value, dict):
         return value.get("Name") or value.get("name")
     return None

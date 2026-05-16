@@ -27,7 +27,6 @@ class BloombergProvider(DataProvider):
     COUNTRY_CURRENCIES = {
         'BZ': 'BRL',
         'US': 'USD',
-        'CN': 'CAD'
     }
     
     def __init__(
@@ -55,10 +54,7 @@ class BloombergProvider(DataProvider):
     def _load_indicators_field_mappings(self) -> None:
         """Load all indicators additional fields mappings from Fibery, grouped by category."""
         try:
-            df_additional_fields = read_fibery(
-                table_name='Inv-Rsrch-Quant/Campos Adicionais de Indicadores',
-                include_fibery_fields=False
-            )
+            df_additional_fields = read_fibery(table_name='Inv-Rsrch-Quant/Campos Adicionais de Indicadores')
             self.indicators_field_mappings = (
                 df_additional_fields[['Categoria', 'Name', 'Código']]
                 .groupby('Categoria')
@@ -150,10 +146,7 @@ class BloombergProvider(DataProvider):
         elif category in self.tickers_mapping:
             securities_list = self.tickers_mapping[category]
         else:
-            df_securities = read_fibery(
-                table_name='Inv-Rsrch-Quant/Indicadores',
-                include_fibery_fields=False
-            )
+            df_securities = read_fibery(table_name='Inv-Rsrch-Quant/Indicadores')
             df_securities = df_securities[
                 (df_securities['Fonte'] == 'Bloomberg') &
                 (df_securities['Categoria'] == category)
