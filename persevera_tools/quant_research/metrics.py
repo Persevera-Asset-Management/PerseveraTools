@@ -1,6 +1,40 @@
 import pandas as pd
 import numpy as np
+from scipy import stats
 
+
+def winsorize_series(returns: pd.Series, lower_pct: float = 0.5, upper_pct: float = None) -> pd.Series:
+    """
+    Winsorizes the returns series by capping values at chosen percentiles.
+
+    When ``upper_pct`` is None and ``lower_pct`` is non-zero, both tails use
+    symmetric cutoffs (``lower_pct`` and ``100 - lower_pct``). Pass ``upper_pct``
+    explicitly for asymmetric winsorization.
+
+    Args:
+        returns: A pandas Series containing the returns.
+        lower_pct: Percentile for the lower tail, on a 0–100 scale. Set to 0 to
+            skip lower-tail winsorization. Defaults to 0.5.
+        upper_pct: Percentile for the upper tail, on a 0–100 scale. If None and
+            ``lower_pct`` is non-zero, uses ``100 - lower_pct``. If None and
+            ``lower_pct`` is 0, skips upper-tail winsorization.
+
+    Returns:
+        A pandas Series containing the winsorized returns.
+    """
+    if not lower_pct and upper_pct is None:
+        return returns.copy()
+
+    lower = returns.min() if not lower_pct else returns.quantile(lower_pct / 100)
+
+    if upper_pct is not None:
+        upper = returns.quantile(upper_pct / 100)
+    elif lower_pct:
+        upper = returns.quantile(1 - lower_pct / 100)
+    else:
+        upper = returns.max()
+
+    return returns.clip(lower=lower, upper=upper)
 
 def calculate_sqn(close_prices: pd.Series, period: int = 100) -> pd.Series:
     """

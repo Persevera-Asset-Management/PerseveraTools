@@ -1,4 +1,4 @@
-from typing import Optional, Dict, List, Union, Literal, Any
+from typing import Optional, Dict, List, Union, Literal, Any, Callable, TypeVar
 import pandas as pd
 import logging
 
@@ -18,9 +18,11 @@ from .providers.debentures_com import DebenturesComProvider
 from .providers.mdic import MDICProvider
 from .providers.b3 import B3Provider
 from .providers.mais_retorno import MaisRetornoProvider
+from .providers.base import DataRetrievalError
 from ..db.operations import to_sql
 
 logger = logging.getLogger(__name__)
+T = TypeVar('T')
 
 
 class FinancialDataService:
@@ -43,28 +45,60 @@ class FinancialDataService:
             bloomberg_fields_mapping: Optional custom mapping of Bloomberg fields to internal fields
         """
         self.start_date = start_date
-        self.bloomberg = BloombergProvider(
-            start_date=start_date,
-            tickers_mapping=bloomberg_tickers_mapping,
-            fields_mapping=bloomberg_fields_mapping,
-        )
-        self.sgs = SGSProvider(start_date=start_date)
-        self.fred = FredProvider(start_date=start_date)
-        self.sidra = SidraProvider(start_date=start_date)
-        self.anbima = AnbimaProvider(start_date=start_date)
-        self.anbima_feed = AnbimaFeedProvider(start_date=start_date)
-        self.anbima_fundos = AnbimaFundosProvider(start_date=start_date)
-        self.cvm = CVMProvider(start_date=start_date)
-        self.bcb_focus = BcbFocusProvider(start_date=start_date)
-        self.simplify = SimplifyProvider(start_date=start_date)
-        self.invesco = InvescoProvider(start_date=start_date)
-        self.kraneshares = KraneSharesProvider(start_date=start_date)
-        self.investing_com = InvestingComProvider()
-        self.debentures_com = DebenturesComProvider()
-        self.mdic = MDICProvider()
-        self.b3 = B3Provider()
-        self.mais_retorno = MaisRetornoProvider()
         self.logger = logging.getLogger(self.__class__.__name__)
+        self._provider_init_errors: Dict[str, Exception] = {}
+
+        self.bloomberg = self._initialize_provider(
+            'bloomberg',
+            lambda: BloombergProvider(
+                start_date=start_date,
+                tickers_mapping=bloomberg_tickers_mapping,
+                fields_mapping=bloomberg_fields_mapping,
+            ),
+        )
+        self.sgs = self._initialize_provider('sgs', lambda: SGSProvider(start_date=start_date))
+        self.fred = self._initialize_provider('fred', lambda: FredProvider(start_date=start_date))
+        self.sidra = self._initialize_provider('sidra', lambda: SidraProvider(start_date=start_date))
+        self.anbima = self._initialize_provider('anbima', lambda: AnbimaProvider(start_date=start_date))
+        self.anbima_feed = self._initialize_provider('anbima_feed', lambda: AnbimaFeedProvider(start_date=start_date))
+        self.anbima_fundos = self._initialize_provider(
+            'anbima_fundos',
+            lambda: AnbimaFundosProvider(start_date=start_date),
+        )
+        self.cvm = self._initialize_provider('cvm', lambda: CVMProvider(start_date=start_date))
+        self.bcb_focus = self._initialize_provider('bcb_focus', lambda: BcbFocusProvider(start_date=start_date))
+        self.simplify = self._initialize_provider('simplify', lambda: SimplifyProvider(start_date=start_date))
+        self.invesco = self._initialize_provider('invesco', lambda: InvescoProvider(start_date=start_date))
+        self.kraneshares = self._initialize_provider('kraneshares', lambda: KraneSharesProvider(start_date=start_date))
+        self.investing_com = self._initialize_provider('investing_com', InvestingComProvider)
+        self.debentures_com = self._initialize_provider('debentures_com', DebenturesComProvider)
+        self.mdic = self._initialize_provider('mdic', MDICProvider)
+        self.b3 = self._initialize_provider('b3', B3Provider)
+        self.mais_retorno = self._initialize_provider('mais_retorno', MaisRetornoProvider)
+
+    def _initialize_provider(self, provider_name: str, factory: Callable[[], T]) -> Optional[T]:
+        """Initialize providers in a best-effort mode to avoid hard failure on startup."""
+        try:
+            return factory()
+        except Exception as e:
+            self._provider_init_errors[provider_name] = e
+            self.logger.warning(
+                "Provider '%s' unavailable during FinancialDataService initialization: %s",
+                provider_name,
+                e,
+            )
+            return None
+
+    def _require_provider(self, provider: Optional[T], provider_name: str) -> T:
+        """Raise a clear error when trying to use a provider that failed to initialize."""
+        if provider is not None:
+            return provider
+
+        init_error = self._provider_init_errors.get(provider_name)
+        message = f"Provider '{provider_name}' is unavailable."
+        if init_error is not None:
+            message = f"{message} Initialization error: {init_error}"
+        raise DataRetrievalError(message)
         
     def get_bloomberg_data(
         self,
@@ -113,7 +147,8 @@ class FinancialDataService:
         
         while attempt < retry_attempts:
             try:
-                df = self.bloomberg.get_data(
+                bloomberg_provider = self._require_provider(self.bloomberg, 'bloomberg')
+                df = bloomberg_provider.get_data(
                     category=category,
                     data_type=data_type,
                     additional_fields=additional_fields,
@@ -178,7 +213,8 @@ class FinancialDataService:
         
         while attempt < retry_attempts:
             try:
-                df = self.cvm.get_data(category=source, cnpjs=cnpjs)
+                cvm_provider = self._require_provider(self.cvm, 'cvm')
+                df = cvm_provider.get_data(category=source, cnpjs=cnpjs)
                 
                 if df.empty:
                     self.logger.warning(f"No data retrieved from CVM")
@@ -255,7 +291,8 @@ class FinancialDataService:
 
         while attempt < retry_attempts:
             try:
-                df = self.anbima_fundos.get_series_historicas(cnpjs, **kwargs)
+                anbima_fundos_provider = self._require_provider(self.anbima_fundos, 'anbima_fundos')
+                df = anbima_fundos_provider.get_series_historicas(cnpjs, **kwargs)
                 cols = {
                     'cnpj_fundo': 'fund_cnpj',
                     'data_competencia': 'date',
@@ -269,6 +306,18 @@ class FinancialDataService:
                 df = df.rename(columns=cols)
                 df['fund_total_value'] = df['fund_total_equity']
                 df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                for col in (
+                    'fund_nav',
+                    'fund_total_equity',
+                    'fund_inflows',
+                    'fund_outflows',
+                    'fund_holders',
+                    'fund_total_value',
+                ):
+                    values = pd.to_numeric(df[col], errors='coerce')
+                    df[col] = values.mask(
+                        values.isin([float('inf'), float('-inf')])
+                    ).astype('float64')
 
                 if df.empty:
                     self.logger.warning("No data retrieved from ANBIMA Fundos")
@@ -322,7 +371,8 @@ class FinancialDataService:
         
         while attempt < retry_attempts:
             try:
-                df = self.investing_com.get_data(category='economic_calendar')
+                investing_provider = self._require_provider(self.investing_com, 'investing_com')
+                df = investing_provider.get_data(category='economic_calendar')
                 
                 if df.empty:
                     self.logger.warning(f"No data retrieved from Investing.com")
@@ -393,45 +443,46 @@ class FinancialDataService:
 
         # Map of sources to providers and default table names
         providers = {
-            'sgs': (self.sgs, 'indicadores'),
-            'fred': (self.fred, 'indicadores'),
-            'sidra': (self.sidra, 'indicadores'),
-            'debentures_com': (self.debentures_com, 'credito_privado_emissoes'),
-            'anbima_indices': (self.anbima, 'indicadores'),
-            'anbima_debentures': (self.anbima, 'credito_privado_historico'),
-            'anbima_titulos_publicos': (self.anbima, 'anbima_titulos_publicos_historico'),
-            'anbima_cri_cra': (self.anbima, 'credito_privado_historico'),
+            'sgs': (self.sgs, 'indicadores', 'sgs'),
+            'fred': (self.fred, 'indicadores', 'fred'),
+            'sidra': (self.sidra, 'indicadores', 'sidra'),
+            'debentures_com': (self.debentures_com, 'credito_privado_emissoes', 'debentures_com'),
+            'anbima_indices': (self.anbima, 'indicadores', 'anbima'),
+            'anbima_debentures': (self.anbima, 'credito_privado_historico', 'anbima'),
+            'anbima_titulos_publicos': (self.anbima, 'anbima_titulos_publicos_historico', 'anbima'),
+            'anbima_cri_cra': (self.anbima, 'credito_privado_historico', 'anbima'),
             # ANBIMA Feed (OAuth2) – preços e índices
-            'anbima_feed_titulos_publicos_mercado_secundario': (self.anbima_feed, 'indicadores'),
-            'anbima_feed_titulos_publicos_vna': (self.anbima_feed, 'indicadores'),
-            'anbima_feed_titulos_publicos_curvas_juros': (self.anbima_feed, 'indicadores'),
-            'anbima_feed_debentures_mercado_secundario': (self.anbima_feed, 'credito_privado_historico'),
-            'anbima_feed_debentures_curvas_credito': (self.anbima_feed, 'credito_privado_historico'),
-            'anbima_feed_cri_cra_mercado_secundario': (self.anbima_feed, 'credito_privado_historico'),
-            'anbima_feed_fidc_mercado_secundario': (self.anbima_feed, 'credito_privado_historico'),
-            'anbima_feed_indices_resultados_ihfa_fechado': (self.anbima_feed, 'indicadores'),
-            'anbima_feed_indices_resultados_ima': (self.anbima_feed, 'indicadores'),
-            'anbima_feed_indices_resultados_idka': (self.anbima_feed, 'indicadores'),
+            'anbima_feed_titulos_publicos_mercado_secundario': (self.anbima_feed, 'indicadores', 'anbima_feed'),
+            'anbima_feed_titulos_publicos_vna': (self.anbima_feed, 'indicadores', 'anbima_feed'),
+            'anbima_feed_titulos_publicos_curvas_juros': (self.anbima_feed, 'indicadores', 'anbima_feed'),
+            'anbima_feed_debentures_mercado_secundario': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
+            'anbima_feed_debentures_curvas_credito': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
+            'anbima_feed_cri_cra_mercado_secundario': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
+            'anbima_feed_fidc_mercado_secundario': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
+            'anbima_feed_indices_resultados_ihfa_fechado': (self.anbima_feed, 'indicadores', 'anbima_feed'),
+            'anbima_feed_indices_resultados_ima': (self.anbima_feed, 'indicadores', 'anbima_feed'),
+            'anbima_feed_indices_resultados_idka': (self.anbima_feed, 'indicadores', 'anbima_feed'),
             # ANBIMA Fundos v2 – endpoints de lista/lote (sem CNPJ por rota)
-            'anbima_fundos_lista': (self.anbima_fundos, 'fundos_anbima_cadastro'),
-            'anbima_fundos_instituicoes': (self.anbima_fundos, 'fundos_anbima_cadastro'),
-            'anbima_fundos_lote_dados_cadastrais': (self.anbima_fundos, 'fundos_anbima_cadastro'),
-            'anbima_fundos_lote_serie_historica': (self.anbima_fundos, 'fundos_anbima'),
-            'bcb_focus': (self.bcb_focus, 'indicadores'),
-            'simplify': (self.simplify, 'indicadores'),
-            'invesco': (self.invesco, 'indicadores'),
-            'kraneshares': (self.kraneshares, 'indicadores'),
-            'mdic': (self.mdic, 'indicadores'),
-            'b3_investor_flow': (self.b3, 'indicadores'),
-            'b3_bdi': (self.b3, 'credito_privado_historico'),
-            'mais_retorno_debentures': (self.mais_retorno, 'credito_privado_historico'),
-            'mais_retorno_fundos': (self.mais_retorno, 'fundos_cvm'),
+            'anbima_fundos_lista': (self.anbima_fundos, 'fundos_anbima_cadastro', 'anbima_fundos'),
+            'anbima_fundos_instituicoes': (self.anbima_fundos, 'fundos_anbima_cadastro', 'anbima_fundos'),
+            'anbima_fundos_lote_dados_cadastrais': (self.anbima_fundos, 'fundos_anbima_cadastro', 'anbima_fundos'),
+            'anbima_fundos_lote_serie_historica': (self.anbima_fundos, 'fundos_anbima', 'anbima_fundos'),
+            'bcb_focus': (self.bcb_focus, 'indicadores', 'bcb_focus'),
+            'simplify': (self.simplify, 'indicadores', 'simplify'),
+            'invesco': (self.invesco, 'indicadores', 'invesco'),
+            'kraneshares': (self.kraneshares, 'indicadores', 'kraneshares'),
+            'mdic': (self.mdic, 'indicadores', 'mdic'),
+            'b3_investor_flow': (self.b3, 'indicadores', 'b3'),
+            'b3_bdi': (self.b3, 'credito_privado_historico', 'b3'),
+            'mais_retorno_debentures': (self.mais_retorno, 'credito_privado_historico', 'mais_retorno'),
+            'mais_retorno_fundos': (self.mais_retorno, 'fundos_cvm', 'mais_retorno'),
         }
         
         if source not in providers:
             raise ValueError(f"Unknown source: {source}")
             
-        provider, default_table = providers[source]
+        provider, default_table, provider_name = providers[source]
+        active_provider = self._require_provider(provider, provider_name)
         default_primary_keys = ['code', 'date', 'field']
         
         attempt = 0
@@ -439,7 +490,7 @@ class FinancialDataService:
         
         while attempt < retry_attempts:
             try:
-                df = provider.get_data(category=source, **kwargs)
+                df = active_provider.get_data(category=source, **kwargs)
                 
                 if df.empty:
                     self.logger.warning(f"No data retrieved from {source}")

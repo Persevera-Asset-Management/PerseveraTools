@@ -17,6 +17,33 @@ from ..utils.logging import get_logger, timed
 # Get a logger for this module
 logger = get_logger(__name__)
 
+
+def _sanitize_for_psycopg2(data: pd.DataFrame) -> pd.DataFrame:
+    """
+    Convert nullable pandas extension dtypes to values psycopg2 can adapt.
+
+    ``DataFrame.to_numpy()`` on mixed-type frames uses an object array; missing
+    values in nullable dtypes (``Int64``, ``Float64``, etc.) become ``pd.NA``,
+    which psycopg2 cannot serialize.
+    """
+    out = data.copy()
+    for col in out.columns:
+        ser = out[col]
+        if isinstance(ser.dtype, pd.api.extensions.ExtensionDtype):
+            if pd.api.types.is_bool_dtype(ser):
+                out[col] = ser.astype(object).where(ser.notna(), None)
+            elif pd.api.types.is_numeric_dtype(ser):
+                numeric = pd.to_numeric(ser, errors='coerce')
+                out[col] = numeric.mask(
+                    numeric.isin([float('inf'), float('-inf')])
+                ).astype('float64')
+            else:
+                out[col] = ser.astype(object).where(ser.notna(), None)
+        elif ser.dtype == object:
+            out[col] = ser.map(lambda v: None if pd.isna(v) else v)
+    return out
+
+
 @timed
 def to_sql(data: pd.DataFrame,
                table_name: str,
@@ -41,6 +68,7 @@ def to_sql(data: pd.DataFrame,
         data.head(0).to_sql(table_name, engine, if_exists='append', index=False)
         
         # Prepare data for insertion
+        data = _sanitize_for_psycopg2(data)
         data_tuples = [tuple(x) for x in data.to_numpy()]
         cols = ','.join(list(data.columns))
         
