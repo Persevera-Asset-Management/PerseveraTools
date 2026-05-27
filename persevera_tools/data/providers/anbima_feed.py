@@ -17,6 +17,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -231,6 +232,57 @@ FEED_ENDPOINTS: Dict[str, tuple] = {
     ),
 }
 
+# Per-endpoint normalization specs.
+#
+# Quando uma categoria possui entrada aqui, ``AnbimaFeedProvider.get_data`` converte
+# o DataFrame "wide" devolvido pela API para o formato long padronizado
+# ``[date, code, reference?, field, value, source]`` — esperado pelas tabelas
+# ``credito_privado_historico`` / ``indicadores`` e compatível com o
+# ``AnbimaProvider`` legado. Use ``raw=True`` em ``get_data`` para receber o JSON
+# bruto sem transformação.
+NORMALIZE_CONFIG: Dict[str, Dict[str, Any]] = {
+    "anbima_feed_debentures_mais_mercado_secundario": {
+        "rename": {
+            "codigo_ativo": "code",
+            "data_referencia": "date",
+            "referencia_ntnb": "reference",
+            "taxa_indicativa": "yield_to_maturity",
+            "pu": "price_close",
+            "duration": "duration",
+            "percent_pu_par": "par_percentage",
+            "pu_par": "par_value",
+        },
+        "id_vars": ["code", "date", "reference"],
+        "value_vars": [
+            "yield_to_maturity",
+            "price_close",
+            "duration",
+            "par_percentage",
+            "par_value",
+        ],
+        "source": "anbima",
+    },
+    "anbima_feed_cri_cra_mercado_secundario": {
+        "rename": {
+            "codigo_ativo": "code",
+            "data_referencia": "date",
+            "referencia_ntnb": "reference",
+            "taxa_indicativa": "yield_to_maturity",
+            "pu": "price_close",
+            "duration": "duration",
+            "percent_pu_par": "par_percentage",
+        },
+        "id_vars": ["code", "date", "reference"],
+        "value_vars": [
+            "yield_to_maturity",
+            "price_close",
+            "duration",
+            "par_percentage",
+        ],
+        "source": "anbima",
+    },
+}
+
 # Fundos v2 (RCVM 175) – endpoints that do NOT require a path-level code.
 # Value is the path suffix appended to FUNDOS_BASE_PATH.
 FUNDOS_ENDPOINTS: Dict[str, str] = {
@@ -256,6 +308,13 @@ class AnbimaFeedProvider(DataProvider):
     Letras Financeiras, REUNE, Índices, Índices+, IDA LIQ, IMA para ETFs.
     Para anbima_feed_reune_previas é obrigatório passar instrumento= ('debenture', 'cra', 'cri' ou 'cff').
     Endpoints com mes/ano: passe mes= e ano= em kwargs. IMA ETF aceita etf= (ex: 'IMA_B5_MAIS,IRF_M_P2').
+
+    Formato de saída:
+        Por padrão, categorias com entrada em ``NORMALIZE_CONFIG`` são convertidas
+        para o formato long ``[date, code, reference?, field, value, source]``,
+        pronto para upsert em ``credito_privado_historico``. Categorias sem
+        normalização (ou ``get_data(..., raw=True)``) devolvem o JSON da API
+        convertido em DataFrame "wide".
     """
 
     def __init__(self, start_date: str = "1980-01-01", sandbox: Optional[bool] = None):
@@ -447,7 +506,54 @@ class AnbimaFeedProvider(DataProvider):
         out = out.dropna(subset=["date"])
         return out[["date", "code", "field", "value"]]
 
-    def get_data(self, category: str, **kwargs) -> pd.DataFrame:
+    @staticmethod
+    def _normalize_long(df: pd.DataFrame, category: str) -> pd.DataFrame:
+        """
+        Converte o DataFrame "wide" devolvido pela API para o formato long
+        padronizado ``[date, code, reference?, field, value, source]`` segundo
+        a entrada de ``NORMALIZE_CONFIG`` para ``category``.
+
+        Colunas ausentes em ``value_vars`` são silenciosamente descartadas
+        (a API ocasionalmente omite campos quando não há valor).
+        """
+        spec = NORMALIZE_CONFIG[category]
+        df = df.rename(columns=spec["rename"])
+
+        id_vars = [c for c in spec["id_vars"] if c in df.columns]
+        value_vars = [c for c in spec["value_vars"] if c in df.columns]
+        if not value_vars:
+            return pd.DataFrame(
+                columns=id_vars + ["field", "value", "source"]
+            )
+
+        if "date" in df.columns:
+            df["date"] = pd.to_datetime(df["date"], errors="coerce")
+        if "reference" in df.columns:
+            df["reference"] = pd.to_datetime(df["reference"], errors="coerce")
+
+        out = df.melt(
+            id_vars=id_vars,
+            value_vars=value_vars,
+            var_name="field",
+            value_name="value",
+        )
+        out["source"] = spec.get("source", "anbima")
+        return out.replace({np.nan: None})
+
+    def get_data(self, category: str, raw: bool = False, **kwargs) -> pd.DataFrame:
+        """
+        Recupera dados de uma categoria do AnbimaFeed.
+
+        Args:
+            category: Identificador do endpoint (chave de ``FEED_ENDPOINTS``).
+            raw: Se ``True``, devolve o JSON da API convertido em DataFrame sem
+                qualquer transformação. Por padrão (``False``), categorias com
+                entrada em ``NORMALIZE_CONFIG`` são automaticamente convertidas
+                para o formato long ``[date, code, reference?, field, value,
+                source]``.
+            **kwargs: Parâmetros específicos do endpoint (``data``, ``mes``,
+                ``ano``, ``instrumento``, ``faixa``, ``etf``…).
+        """
         self._ensure_credentials()
         self._log_processing(category)
 
@@ -479,14 +585,14 @@ class AnbimaFeedProvider(DataProvider):
         if kwargs.get("etf") is not None:
             params["etf"] = kwargs["etf"]
 
-        raw = self._get(path, params=params or None)
-        df = pd.DataFrame(raw)
-        # df = self._json_to_long(raw)
+        payload = self._get(path, params=params or None)
+        df = pd.DataFrame(payload)
         if df.empty:
-            return self._validate_output(
-                pd.DataFrame(columns=["date", "code", "field", "value"])
-            )
-        # return self._validate_output(df)
+            return df
+
+        if not raw and category in NORMALIZE_CONFIG:
+            return self._normalize_long(df, category)
+
         return df
 
 

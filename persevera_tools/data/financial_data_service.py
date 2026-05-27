@@ -17,6 +17,7 @@ from .providers.investing_com import InvestingComProvider
 from .providers.debentures_com import DebenturesComProvider
 from .providers.mdic import MDICProvider
 from .providers.b3 import B3Provider
+from .providers.investfy import InvestfyProvider
 from .providers.mais_retorno import MaisRetornoProvider
 from .providers.base import DataRetrievalError
 from ..db.operations import to_sql
@@ -74,6 +75,7 @@ class FinancialDataService:
         self.debentures_com = self._initialize_provider('debentures_com', DebenturesComProvider)
         self.mdic = self._initialize_provider('mdic', MDICProvider)
         self.b3 = self._initialize_provider('b3', B3Provider)
+        self.investfy = self._initialize_provider('investfy', lambda: InvestfyProvider(start_date=start_date))
         self.mais_retorno = self._initialize_provider('mais_retorno', MaisRetornoProvider)
 
     def _initialize_provider(self, provider_name: str, factory: Callable[[], T]) -> Optional[T]:
@@ -412,7 +414,7 @@ class FinancialDataService:
             'anbima_fundos_lista', 'anbima_fundos_instituicoes',
             'anbima_fundos_lote_dados_cadastrais', 'anbima_fundos_lote_serie_historica',
             'simplify', 'invesco', 'bcb_focus', 'kraneshares', 'mdic',
-            'b3_investor_flow', 'b3_bdi',
+            'b3_investor_flow', 'b3_bdi', 'investfy_investor_flow',
             'mais_retorno_debentures', 'mais_retorno_fundos',
         ],
         save_to_db: bool = True,
@@ -474,6 +476,7 @@ class FinancialDataService:
             'mdic': (self.mdic, 'indicadores', 'mdic'),
             'b3_investor_flow': (self.b3, 'indicadores', 'b3'),
             'b3_bdi': (self.b3, 'credito_privado_historico', 'b3'),
+            'investfy_investor_flow': (self.investfy, 'indicadores', 'investfy'),
             'mais_retorno_debentures': (self.mais_retorno, 'credito_privado_historico', 'mais_retorno'),
             'mais_retorno_fundos': (self.mais_retorno, 'fundos_cvm', 'mais_retorno'),
         }
