@@ -5,7 +5,7 @@ Pull da Calibração mais recente (ou específica por ID/data) das tabelas:
   • Inv-Rsrch-Quant/Calibração de Mercado
   • Inv-Rsrch-Quant/Classes de Ativo (catálogo)
   • Inv-Rsrch-Quant/Parâmetros de Classe (vol/maxw/maxrc)
-  • Inv-Rsrch-Quant/RC Target por Bucket (RC P1/P10)
+  • Inv-Rsrch-Quant/RC Target por Bucket (RC P1/P10 + Curvatura RC opcional)
   • Inv-Rsrch-Quant/Correlação Cross-Classe (rho para TODOS os pares de classes)
 
 Estratégia de falha: explícita. Se qualquer pull falhar, a calibração estiver
@@ -222,6 +222,7 @@ def _build_config_from_calibration(
     # ── RC Targets
     # Verifica que cada bucket tem exatamente um RC target
     rc_targets: dict[str, RCTarget] = {}
+    rc_curvature: dict[str, float] = {}
     for bk in bucket_order:
         rows = rc_df[rc_df["bucket"] == bk]
         if rows.empty:
@@ -238,6 +239,19 @@ def _build_config_from_calibration(
             rc_p1=float(r["rc_p1"]),
             rc_p10=float(r["rc_p10"]),
         )
+        # Curvatura: ausente/vazia ⇒ linear (gamma=1.0). Valor > 0 obrigatório.
+        gamma = r.get("curvatura")
+        if gamma is not None and pd.notna(gamma):
+            gamma = float(gamma)
+            if gamma <= 0:
+                raise FiberyLoaderError(
+                    f"Bucket '{bk}': Curvatura RC = {gamma} deve ser > 0 "
+                    f"(use 1.0 para interpolação linear)"
+                )
+            rc_curvature[bk] = gamma
+
+    # Se nenhum bucket definiu curvatura, passa None (motor usa linear puro).
+    rc_curvature_arg = rc_curvature if rc_curvature else None
 
     # ── Matriz de correlação completa (n × n, todos os pares)
     full_corr = _build_full_corr_matrix(assets, corr_df)
@@ -284,6 +298,7 @@ def _build_config_from_calibration(
         sigma_max_pct=sigma_max * 100.0,
         n_profiles=int(n_profiles),
         min_weight_threshold=float(min_weight_threshold),
+        rc_curvature=rc_curvature_arg,
         calibration_name=calibration_name,
         calibration_date=calibration_date,
         calibration_status=calibration_status,
@@ -369,7 +384,14 @@ def _read_parameters(calibration_name: str) -> pd.DataFrame:
 
 
 def _read_rc_targets(calibration_name: str) -> pd.DataFrame:
-    """Lê RC Target por Bucket. Filtra pela calibração."""
+    """
+    Lê RC Target por Bucket. Filtra pela calibração.
+
+    `curvatura` é OPCIONAL: o campo 'Curvatura RC' pode não existir em
+    workspaces ainda não migrados, ou estar vazio em alguns buckets. Quando
+    ausente/vazio, o bucket usa gamma=1.0 (interpolação linear). Por isso a
+    coluna é tratada fora do mapeamento obrigatório de `_normalize_columns`.
+    """
     try:
         df = read_fibery(DB_RC_TARGET)
     except Exception as exc:
@@ -377,14 +399,22 @@ def _read_rc_targets(calibration_name: str) -> pd.DataFrame:
             f"Falha ao ler '{DB_RC_TARGET}' do Fibery: {exc}"
         ) from exc
 
-    df = _normalize_columns(df, {
+    norm = _normalize_columns(df, {
         "calibration_name": ["Calibração", "calibracao_id"],
         "bucket": ["Classificação Layer 1", "bucket"],
         "rc_p1": ["RC P1", "rc_p1"],
         "rc_p10": ["RC P10", "rc_p10"],
     }, table_name=DB_RC_TARGET)
 
-    return df[df["calibration_name"] == calibration_name].copy()
+    # Curvatura RC — opcional. Anexa se a coluna existir no DataFrame de origem.
+    curv_col = next(
+        (c for c in ["Curvatura RC", "Inv-Rsrch-Quant/Curvatura RC", "curvatura"]
+         if c in df.columns),
+        None,
+    )
+    norm["curvatura"] = df[curv_col].values if curv_col is not None else np.nan
+
+    return norm[norm["calibration_name"] == calibration_name].copy()
 
 
 def _read_corr_classes(calibration_name: str) -> pd.DataFrame:

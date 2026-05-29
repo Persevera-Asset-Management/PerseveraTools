@@ -100,6 +100,14 @@ class SpectrumConfig:
     # é uniforme entre as classes do bucket.
     intra_rc_weights: Optional[dict[str, np.ndarray]] = None
 
+    # Curvatura da interpolação de RC por bucket (opcional)
+    # rc_curvature[bucket] = expoente gamma_b > 0 da progressão de RC entre
+    # os endpoints P1 e P10. gamma=1 → linear (default); gamma<1 → bucket
+    # transita cedo (côncavo); gamma>1 → transita tarde (convexo). Buckets
+    # ausentes do dict assumem gamma=1.0. A soma de RC por perfil é sempre
+    # renormalizada para 1.0 no motor.
+    rc_curvature: Optional[dict[str, float]] = None
+
     # Metadados de procedência (opcional)
     calibration_name: Optional[str] = None
     calibration_date: Optional[str] = None
@@ -161,6 +169,19 @@ class SpectrumConfig:
     @property
     def bucket_labels(self) -> dict[str, str]:
         return {bk: b.label for bk, b in self.buckets.items()}
+
+    @property
+    def rc_curvature_array(self) -> Optional[np.ndarray]:
+        """
+        Vetor (n_buckets,) de expoentes gamma na ordem de `bucket_keys`.
+        Buckets ausentes de `rc_curvature` recebem gamma=1.0 (linear).
+        Retorna None se `rc_curvature` não foi fornecido (motor usa linear).
+        """
+        if self.rc_curvature is None:
+            return None
+        return np.array(
+            [float(self.rc_curvature.get(bk, 1.0)) for bk in self.bucket_keys]
+        )
 
     # ── Validação ────────────────────────────────────────────────────────
 
@@ -244,6 +265,16 @@ class SpectrumConfig:
                     )
                 if w.sum() <= 0:
                     raise ValueError(f"intra_rc_weights['{bk}'] tem soma <= 0")
+
+        # rc_curvature (se fornecido)
+        if self.rc_curvature is not None:
+            for bk, g in self.rc_curvature.items():
+                if bk not in self.buckets:
+                    raise ValueError(f"rc_curvature['{bk}'] — bucket desconhecido")
+                if not g > 0:
+                    raise ValueError(
+                        f"rc_curvature['{bk}'] = {g} deve ser > 0"
+                    )
 
         # Parâmetros do motor
         if self.sigma_min_pct >= self.sigma_max_pct:

@@ -62,10 +62,7 @@ class FinancialDataService:
         self.sidra = self._initialize_provider('sidra', lambda: SidraProvider(start_date=start_date))
         self.anbima = self._initialize_provider('anbima', lambda: AnbimaProvider(start_date=start_date))
         self.anbima_feed = self._initialize_provider('anbima_feed', lambda: AnbimaFeedProvider(start_date=start_date))
-        self.anbima_fundos = self._initialize_provider(
-            'anbima_fundos',
-            lambda: AnbimaFundosProvider(start_date=start_date),
-        )
+        self.anbima_fundos = self._initialize_provider('anbima_fundos', lambda: AnbimaFundosProvider(start_date=start_date))
         self.cvm = self._initialize_provider('cvm', lambda: CVMProvider(start_date=start_date))
         self.bcb_focus = self._initialize_provider('bcb_focus', lambda: BcbFocusProvider(start_date=start_date))
         self.simplify = self._initialize_provider('simplify', lambda: SimplifyProvider(start_date=start_date))
@@ -408,7 +405,8 @@ class FinancialDataService:
             'anbima_indices', 'anbima_debentures', 'anbima_titulos_publicos', 'anbima_cri_cra',
             'anbima_feed_titulos_publicos_mercado_secundario', 'anbima_feed_titulos_publicos_vna',
             'anbima_feed_titulos_publicos_curvas_juros', 'anbima_feed_debentures_mercado_secundario',
-            'anbima_feed_debentures_curvas_credito', 'anbima_feed_cri_cra_mercado_secundario',
+            'anbima_feed_debentures_curvas_credito', 'anbima_feed_debentures_mais_mercado_secundario',
+            'anbima_feed_cri_cra_mercado_secundario',
             'anbima_feed_fidc_mercado_secundario', 'anbima_feed_indices_resultados_ihfa_fechado',
             'anbima_feed_indices_resultados_ima', 'anbima_feed_indices_resultados_idka',
             'anbima_fundos_lista', 'anbima_fundos_instituicoes',
@@ -453,22 +451,6 @@ class FinancialDataService:
             'anbima_debentures': (self.anbima, 'credito_privado_historico', 'anbima'),
             'anbima_titulos_publicos': (self.anbima, 'anbima_titulos_publicos_historico', 'anbima'),
             'anbima_cri_cra': (self.anbima, 'credito_privado_historico', 'anbima'),
-            # ANBIMA Feed (OAuth2) – preços e índices
-            'anbima_feed_titulos_publicos_mercado_secundario': (self.anbima_feed, 'indicadores', 'anbima_feed'),
-            'anbima_feed_titulos_publicos_vna': (self.anbima_feed, 'indicadores', 'anbima_feed'),
-            'anbima_feed_titulos_publicos_curvas_juros': (self.anbima_feed, 'indicadores', 'anbima_feed'),
-            'anbima_feed_debentures_mercado_secundario': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
-            'anbima_feed_debentures_curvas_credito': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
-            'anbima_feed_cri_cra_mercado_secundario': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
-            'anbima_feed_fidc_mercado_secundario': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
-            'anbima_feed_indices_resultados_ihfa_fechado': (self.anbima_feed, 'indicadores', 'anbima_feed'),
-            'anbima_feed_indices_resultados_ima': (self.anbima_feed, 'indicadores', 'anbima_feed'),
-            'anbima_feed_indices_resultados_idka': (self.anbima_feed, 'indicadores', 'anbima_feed'),
-            # ANBIMA Fundos v2 – endpoints de lista/lote (sem CNPJ por rota)
-            'anbima_fundos_lista': (self.anbima_fundos, 'fundos_anbima_cadastro', 'anbima_fundos'),
-            'anbima_fundos_instituicoes': (self.anbima_fundos, 'fundos_anbima_cadastro', 'anbima_fundos'),
-            'anbima_fundos_lote_dados_cadastrais': (self.anbima_fundos, 'fundos_anbima_cadastro', 'anbima_fundos'),
-            'anbima_fundos_lote_serie_historica': (self.anbima_fundos, 'fundos_anbima', 'anbima_fundos'),
             'bcb_focus': (self.bcb_focus, 'indicadores', 'bcb_focus'),
             'simplify': (self.simplify, 'indicadores', 'simplify'),
             'invesco': (self.invesco, 'indicadores', 'invesco'),
@@ -479,6 +461,23 @@ class FinancialDataService:
             'investfy_investor_flow': (self.investfy, 'indicadores', 'investfy'),
             'mais_retorno_debentures': (self.mais_retorno, 'credito_privado_historico', 'mais_retorno'),
             'mais_retorno_fundos': (self.mais_retorno, 'fundos_cvm', 'mais_retorno'),
+            # ANBIMA Feed (OAuth2) – preços e índices
+            'anbima_feed_titulos_publicos_mercado_secundario': (self.anbima_feed, 'indicadores', 'anbima_feed'),
+            'anbima_feed_titulos_publicos_vna': (self.anbima_feed, 'indicadores', 'anbima_feed'),
+            'anbima_feed_titulos_publicos_curvas_juros': (self.anbima_feed, 'indicadores', 'anbima_feed'),
+            'anbima_feed_debentures_mercado_secundario': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
+            'anbima_feed_debentures_curvas_credito': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
+            'anbima_feed_debentures_mais_mercado_secundario': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
+            'anbima_feed_cri_cra_mercado_secundario': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
+            'anbima_feed_fidc_mercado_secundario': (self.anbima_feed, 'credito_privado_historico', 'anbima_feed'),
+            'anbima_feed_indices_resultados_ihfa_fechado': (self.anbima_feed, 'indicadores', 'anbima_feed'),
+            'anbima_feed_indices_resultados_ima': (self.anbima_feed, 'indicadores', 'anbima_feed'),
+            'anbima_feed_indices_resultados_idka': (self.anbima_feed, 'indicadores', 'anbima_feed'),
+            # ANBIMA Fundos v2 – endpoints de lista/lote (sem CNPJ por rota)
+            'anbima_fundos_lista': (self.anbima_fundos, 'fundos_anbima_cadastro', 'anbima_fundos'),
+            'anbima_fundos_instituicoes': (self.anbima_fundos, 'fundos_anbima_cadastro', 'anbima_fundos'),
+            'anbima_fundos_lote_dados_cadastrais': (self.anbima_fundos, 'fundos_anbima_cadastro', 'anbima_fundos'),
+            'anbima_fundos_lote_serie_historica': (self.anbima_fundos, 'fundos_anbima', 'anbima_fundos'),
         }
         
         if source not in providers:
@@ -494,6 +493,7 @@ class FinancialDataService:
         while attempt < retry_attempts:
             try:
                 df = active_provider.get_data(category=source, **kwargs)
+                df = df.dropna(subset=['value'])
                 
                 if df.empty:
                     self.logger.warning(f"No data retrieved from {source}")

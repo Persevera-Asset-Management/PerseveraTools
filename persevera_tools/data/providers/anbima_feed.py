@@ -22,6 +22,10 @@ import pandas as pd
 import requests
 
 from .base import DataProvider, DataRetrievalError
+
+
+class AnbimaFeedNotFoundError(DataRetrievalError):
+    """Raised when the ANBIMA Feed API returns 404 (no data for the requested date)."""
 from ...config import settings
 from ...utils.logging import get_logger
 
@@ -421,8 +425,11 @@ class AnbimaFeedProvider(DataProvider):
                         )
                         logger.error("ANBIMA Feed API error %s: %s", status, msg)
                     elif status == 404:
-                        # 404 é condição normal de fim de paginação; log em DEBUG
+                        # 404 é condição normal: sem dados para a data solicitada ou fim de paginação
                         logger.debug("ANBIMA Feed API 404 em %s: %s", url, e.response.text[:200])
+                        raise AnbimaFeedNotFoundError(
+                            f"ANBIMA Feed API request failed: {e}"
+                        ) from e
                     else:
                         msg = e.response.text[:500]
                         logger.error("ANBIMA Feed API error %s: %s", status, msg)
@@ -551,8 +558,17 @@ class AnbimaFeedProvider(DataProvider):
                 entrada em ``NORMALIZE_CONFIG`` são automaticamente convertidas
                 para o formato long ``[date, code, reference?, field, value,
                 source]``.
-            **kwargs: Parâmetros específicos do endpoint (``data``, ``mes``,
-                ``ano``, ``instrumento``, ``faixa``, ``etf``…).
+            **kwargs: Parâmetros específicos do endpoint:
+                ``data`` (str, YYYY-MM-DD): data pontual. Se omitido em
+                    endpoints com parâmetro de data, itera automaticamente
+                    sobre o intervalo de dias úteis desde ``start_date`` até
+                    hoje, concatenando os resultados. Datas sem dados são
+                    silenciosamente ignoradas.
+                ``mes``, ``ano``: para endpoints de resultados mensais.
+                ``instrumento``: obrigatório para anbima_feed_reune_previas
+                    (``'debenture'``, ``'cra'``, ``'cri'`` ou ``'cff'``).
+                ``faixa``: faixa horária para REUNE (``'11:00'`` … ``'18:00'``).
+                ``etf``: filtro de ETF para endpoints IMA ETF.
         """
         self._ensure_credentials()
         self._log_processing(category)
@@ -566,34 +582,61 @@ class AnbimaFeedProvider(DataProvider):
         path_suffix, date_param = FEED_ENDPOINTS[category]
         path = f"{FEED_BASE_PATH}/{path_suffix}"
 
-        params: Dict[str, Any] = {}
-        if date_param:
-            if kwargs.get("data"):
-                params[date_param] = kwargs["data"]
-            else:
-                params[date_param] = self.start_date.strftime("%Y-%m-%d")
-        if kwargs.get("mes") is not None:
-            params["mes"] = kwargs["mes"]
-        if kwargs.get("ano") is not None:
-            params["ano"] = kwargs["ano"]
-        # REUNE: instrumento obrigatório (debenture, cra, cri, cff); faixa opcional (11:00, 13:00, 16:00, 18:00)
-        if kwargs.get("instrumento") is not None:
-            params["instrumento"] = kwargs["instrumento"]
-        if kwargs.get("faixa") is not None:
-            params["faixa"] = kwargs["faixa"]
-        # IMA ETF: etf opcional (ex: IMA_B5_MAIS,IRF_M_P2)
-        if kwargs.get("etf") is not None:
-            params["etf"] = kwargs["etf"]
+        def _build_params(date_str: Optional[str] = None) -> Dict[str, Any]:
+            p: Dict[str, Any] = {}
+            if date_param and date_str:
+                p[date_param] = date_str
+            if kwargs.get("mes") is not None:
+                p["mes"] = kwargs["mes"]
+            if kwargs.get("ano") is not None:
+                p["ano"] = kwargs["ano"]
+            # REUNE: instrumento obrigatório (debenture, cra, cri, cff); faixa opcional
+            if kwargs.get("instrumento") is not None:
+                p["instrumento"] = kwargs["instrumento"]
+            if kwargs.get("faixa") is not None:
+                p["faixa"] = kwargs["faixa"]
+            # IMA ETF: etf opcional (ex: IMA_B5_MAIS,IRF_M_P2)
+            if kwargs.get("etf") is not None:
+                p["etf"] = kwargs["etf"]
+            return p
 
-        payload = self._get(path, params=params or None)
-        df = pd.DataFrame(payload)
-        if df.empty:
+        def _fetch_single(params: Dict[str, Any]) -> pd.DataFrame:
+            payload = self._get(path, params=params or None)
+            df = pd.DataFrame(payload)
+            if df.empty:
+                return df
+            if not raw and category in NORMALIZE_CONFIG:
+                return self._normalize_long(df, category)
             return df
 
-        if not raw and category in NORMALIZE_CONFIG:
-            return self._normalize_long(df, category)
+        # Date-range mode: endpoint has a date param but caller did not pin a specific date.
+        # Iterate over business days from start_date to today and concatenate results.
+        if date_param and not kwargs.get("data"):
+            end_date = pd.Timestamp.today().normalize()
+            dates = pd.bdate_range(start=self.start_date, end=end_date)
+            if len(dates) == 0:
+                return pd.DataFrame()
+            logger.info(
+                "%s: iterando sobre %d dias uteis (%s -> %s).",
+                category, len(dates),
+                dates[0].strftime("%Y-%m-%d"), dates[-1].strftime("%Y-%m-%d"),
+            )
+            frames: List[pd.DataFrame] = []
+            for dt in dates:
+                date_str = dt.strftime("%Y-%m-%d")
+                try:
+                    df = _fetch_single(_build_params(date_str))
+                    if not df.empty:
+                        frames.append(df)
+                except AnbimaFeedNotFoundError:
+                    # Feriado ou dia sem negociação — sem dados esperado, ignorar
+                    logger.debug("Sem dados para %s em %s, ignorando.", category, date_str)
+            if not frames:
+                return pd.DataFrame()
+            return pd.concat(frames, ignore_index=True)
 
-        return df
+        # Single-date or no-date mode (data= fornecido ou endpoint sem parâmetro de data)
+        return _fetch_single(_build_params(kwargs.get("data")))
 
 
 class AnbimaFundosProvider(AnbimaFeedProvider):

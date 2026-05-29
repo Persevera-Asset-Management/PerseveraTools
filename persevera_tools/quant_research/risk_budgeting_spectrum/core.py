@@ -161,20 +161,77 @@ def _interpolate_rc_targets(
     rc_p1: np.ndarray,
     rc_p10: np.ndarray,
     n_profiles: int,
+    curvature: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     Para cada perfil p ∈ {1, ..., n_profiles}, calcula o RC-target por bucket
-    interpolando linearmente no índice do perfil:
-        rc_p[b] = (1 - f) * rc_p1[b] + f * rc_p10[b],  f = (p-1)/(n_profiles-1)
+    interpolando entre os endpoints `rc_p1` e `rc_p10`.
+
+    Progressão por bucket
+    ---------------------
+    Seja f = (p-1)/(n_profiles-1) ∈ [0, 1] a fração de progressão no espectro.
+    Para cada bucket b, aplica-se uma progressão potencialmente não-linear:
+
+        g_b(f) = f ** gamma_b
+
+    e o RC bruto do bucket é:
+
+        raw_b = (1 - g_b) * rc_p1[b] + g_b * rc_p10[b]
+
+    Interpretação de gamma_b (curvature[b]):
+      • gamma = 1.0  → interpolação linear (comportamento legado)
+      • gamma < 1.0  → progressão côncava: o bucket transita CEDO (sai do
+                       valor P1 rápido nos primeiros perfis). Útil p/ um bucket
+                       que precisa ceder RC rapidamente (ex.: RF de baixa vol
+                       que não consegue sustentar RC alto no meio do espectro).
+      • gamma > 1.0  → progressão convexa: transita TARDE (segura o valor P1
+                       por mais tempo e só muda perto de P10).
+
+    Renormalização (invariante de soma = 1)
+    ---------------------------------------
+    Curvaturas independentes por bucket fazem a soma dos `raw_b` deixar de ser
+    1.0. Para preservar a semântica de RC (a soma dos RC-targets de um perfil
+    DEVE ser 1.0), cada linha é renormalizada:
+
+        rc_p[b] = raw_b / sum_b(raw_b)
+
+    Nos endpoints (f=0 e f=1) g_b ∈ {0, 1} para qualquer gamma, então rc_p1 e
+    rc_p10 são reproduzidos exatamente (assumindo que já somam 1) — a curvatura
+    só afeta os perfis intermediários, como desejado.
+
+    Parâmetros
+    ----------
+    curvature : np.ndarray (n_buckets,) ou None
+        Expoente gamma_b por bucket, na mesma ordem de `rc_p1`/`rc_p10`.
+        None ⇒ todos 1.0 (linear), idêntico ao comportamento anterior.
 
     Retorna matriz (n_profiles, n_buckets) com a soma de cada linha = 1.
     """
+    n_buckets = len(rc_p1)
+    if curvature is None:
+        gamma = np.ones(n_buckets)
+    else:
+        gamma = np.asarray(curvature, dtype=float)
+        if gamma.shape != (n_buckets,):
+            raise ValueError(
+                f"curvature tem shape {gamma.shape}, esperado ({n_buckets},)"
+            )
+        if (gamma <= 0).any():
+            raise ValueError("curvature deve ser > 0 em todos os buckets")
+
     if n_profiles == 1:
-        return np.array([(rc_p1 + rc_p10) / 2])
-    out = np.zeros((n_profiles, len(rc_p1)))
+        raw = 0.5 ** gamma
+        out = (1 - raw) * rc_p1 + raw * rc_p10
+        s = out.sum()
+        return np.array([out / s if s > 0 else out])
+
+    out = np.zeros((n_profiles, n_buckets))
     for i in range(n_profiles):
         f = i / (n_profiles - 1)
-        out[i] = (1 - f) * rc_p1 + f * rc_p10
+        g = f ** gamma                       # progressão por bucket
+        raw = (1 - g) * rc_p1 + g * rc_p10
+        s = raw.sum()
+        out[i] = raw / s if s > 0 else raw   # renormaliza p/ somar 1
     return out
 
 
@@ -226,12 +283,7 @@ def _optimize_profile_rb(
     has_max_rc = ~np.isnan(max_rc)
 
     def objective(w):
-        pv = _portfolio_vol(w, cov)
-        if pv <= 1e-12:
-            return 1e6
-        rc = w * (cov @ w) / pv
-        rc_pct = rc / rc.sum()
-        return float(np.sum((rc_pct - rc_target_asset) ** 2))
+        return _rc_l2_objective(w, cov, rc_target_asset)
 
     constraints = [
         {"type": "eq", "fun": lambda w: w.sum() - 1},
@@ -264,7 +316,12 @@ def _optimize_profile_rb(
     if w0_bkt.sum() > 0:
         starts.append(w0_bkt / w0_bkt.sum())
 
-    best_w, best_obj, converged = None, np.inf, False
+    # Seleção em duas camadas: entre os starts que o solver marcou success,
+    # prefere os que são DE FATO factíveis (vol-alvo, bounds, max_rc dentro de
+    # tolerância) e, dentre esses, o de menor objetivo de RB. Se nenhum for
+    # factível, cai para o de menor objetivo (melhor esforço).
+    best_w, best_obj = None, np.inf            # melhor factível
+    fallback_w, fallback_obj = None, np.inf    # melhor sem factibilidade
     for w0_raw in starts:
         w0 = np.clip(w0_raw, [b[0] for b in bounds], [b[1] for b in bounds])
         if w0.sum() <= 0:
@@ -278,16 +335,25 @@ def _optimize_profile_rb(
                 constraints=constraints,
                 options={"maxiter": 5_000, "ftol": 1e-12},
             )
-            if res.success and res.fun < best_obj:
-                best_obj = res.fun
-                best_w = res.x.copy()
-                converged = True
+            if not res.success:
+                continue
+            cand = res.x.copy()
+            if res.fun < fallback_obj:
+                fallback_obj = res.fun
+                fallback_w = cand
+            if _is_converged(cand, cov, vol_target, max_weights, max_rc):
+                if res.fun < best_obj:
+                    best_obj = res.fun
+                    best_w = cand
         except Exception as exc:
             warnings.warn(
                 f"_optimize_profile_rb: falha — {exc}",
                 RuntimeWarning,
                 stacklevel=3,
             )
+
+    if best_w is None:
+        best_w = fallback_w
 
     if best_w is None:
         best_w = starts[0] if starts else np.ones(n) / n
@@ -302,6 +368,7 @@ def _optimize_profile_rb(
     # ── Polish: zera pesos < threshold e RE-OTIMIZA no conjunto ativo ────
     active = best_w >= min_weight_threshold
     if active.sum() == 0:
+        converged = _is_converged(best_w, cov, vol_target, max_weights, max_rc)
         return best_w, converged
 
     polish_bounds = [
@@ -342,13 +409,28 @@ def _optimize_profile_rb(
             polished[~active] = 0.0
             if polished.sum() > 0:
                 polished /= polished.sum()
-            best_w = polished
+            # Aceita o polish SOMENTE se: (a) satisfaz de fato as constraints
+            # e (b) não piora o objetivo de RB além de folga numérica. Caso
+            # contrário, mantém best_w (o polish é uma reprojeção no active
+            # set, não pode degradar a qualidade da solução silenciosamente).
+            obj_before = _rc_l2_objective(best_w, cov, rc_target_asset)
+            obj_after = _rc_l2_objective(polished, cov, rc_target_asset)
+            polished_ok = _is_converged(
+                polished, cov, vol_target, max_weights, max_rc
+            )
+            if polished_ok and obj_after <= obj_before + 1e-9:
+                best_w = polished
     except Exception as exc:
         warnings.warn(
             f"_optimize_profile_rb: polish falhou — {exc}",
             RuntimeWarning,
             stacklevel=3,
         )
+
+    # ── Convergência real: avaliada sobre a solução FINAL, não sobre o
+    # status do solver. Um start pode reportar success com a igualdade de
+    # vol fora de tolerância ou com max_rc violado; aqui isso é capturado.
+    converged = _is_converged(best_w, cov, vol_target, max_weights, max_rc)
 
     return best_w, converged
 
@@ -363,6 +445,69 @@ def _rc_pct_at(w: np.ndarray, cov: np.ndarray, idx: int) -> float:
     if total <= 0:
         return 0.0
     return float(rc[idx] / total)
+
+
+def _rc_l2_objective(
+    w: np.ndarray, cov: np.ndarray, rc_target_asset: np.ndarray
+) -> float:
+    """
+    Objetivo de Risk Budgeting: soma dos quadrados dos desvios entre o RC%
+    realizado e o RC-target por classe. Penalidade alta se a vol colapsa.
+
+    Helper de módulo (não closure) para poder reavaliar a mesma métrica
+    sobre soluções candidatas (best_w, polished) de forma consistente.
+    """
+    pv = _portfolio_vol(w, cov)
+    if pv <= 1e-12:
+        return 1e6
+    rc = w * (cov @ w) / pv
+    total = rc.sum()
+    if total <= 0:
+        return 1e6
+    rc_pct = rc / total
+    return float(np.sum((rc_pct - rc_target_asset) ** 2))
+
+
+def _is_converged(
+    w: np.ndarray,
+    cov: np.ndarray,
+    vol_target: float,
+    max_weights: np.ndarray,
+    max_rc: np.ndarray,
+    vol_tol: float = 5e-4,
+    sum_tol: float = 1e-6,
+    weight_tol: float = 1e-6,
+    rc_tol: float = 1e-4,
+) -> bool:
+    """
+    Verifica se `w` satisfaz de fato as constraints do problema, dentro de
+    tolerâncias. Usado para decidir o flag `converged` a partir do RESULTADO,
+    não apenas do status do solver (que pode reportar sucesso com a igualdade
+    de vol fora de tolerância).
+
+    Checa:
+      • |sum(w) - 1| <= sum_tol
+      • |vol(w) - vol_target| <= vol_tol           (igualdade de vol)
+      • w_i <= max_weight_i + weight_tol  e  w_i >= -weight_tol
+      • rc_pct_i(w) <= max_rc_i + rc_tol  (onde definido)
+
+    `vol_tol` é absoluto em fração de vol (5e-4 = 0.05 p.p. de vol a.a.).
+    """
+    if w is None:
+        return False
+    if abs(float(w.sum()) - 1.0) > sum_tol:
+        return False
+    if (w < -weight_tol).any():
+        return False
+    if (w > max_weights + weight_tol).any():
+        return False
+    if abs(_portfolio_vol(w, cov) - vol_target) > vol_tol:
+        return False
+    has_max_rc = ~np.isnan(max_rc)
+    for i in np.where(has_max_rc)[0]:
+        if _rc_pct_at(w, cov, int(i)) > float(max_rc[i]) + rc_tol:
+            return False
+    return True
 
 
 # ── Faixa de volatilidade viável do universo ──────────────────────────────────
@@ -517,7 +662,10 @@ def build_spectrum(config: SpectrumConfig) -> dict:
     # ── RC-targets por perfil ────────────────────────────────────────────
     rc_p1  = np.array([config.rc_targets[bk].rc_p1  for bk in bucket_keys])
     rc_p10 = np.array([config.rc_targets[bk].rc_p10 for bk in bucket_keys])
-    rc_targets_per_profile = _interpolate_rc_targets(rc_p1, rc_p10, config.n_profiles)
+    curvature = config.rc_curvature_array
+    rc_targets_per_profile = _interpolate_rc_targets(
+        rc_p1, rc_p10, config.n_profiles, curvature
+    )
 
     # ── Otimização por perfil ────────────────────────────────────────────
     weights: dict[int, np.ndarray] = {}
