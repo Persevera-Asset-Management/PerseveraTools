@@ -82,7 +82,7 @@ class DebenturesComProvider(DataProvider):
             'S': True, 's': True, 'Sim': True,
             'N': False, 'n': False, 'Não': False,
             '-': None, '': None, np.nan: None,
-        })
+        }).infer_objects(copy=False)
         
         df = df.dropna(subset=['code', 'data_emissao'])
         df = df.drop_duplicates(subset=['code', 'data_emissao'], keep='last')
@@ -95,14 +95,7 @@ class DebenturesComProvider(DataProvider):
         long_df = df.melt(id_vars=id_vars, value_vars=value_vars, var_name='field', value_name='value')
         long_df = long_df.rename(columns={'data_emissao': 'date'})
         
-        # Coerce values to numeric where possible, otherwise keep as object
-        long_df['value'] = pd.to_numeric(long_df['value'], errors='ignore')
-        
-        # Handle boolean specifically
-        for col in value_vars:
-            if df[col].dtype == 'bool':
-                 long_df.loc[long_df['field'] == col, 'value'] = long_df.loc[long_df['field'] == col, 'value'].astype(bool)
-
+        long_df['value'] = pd.to_numeric(long_df['value'], errors='coerce')
         long_df = long_df.dropna(subset=['value'])
         return long_df
 
@@ -118,9 +111,4 @@ class DebenturesComProvider(DataProvider):
             self.logger.warning("No data found after parsing.")
             return pd.DataFrame()
         
-        # The base class validator expects numeric values, let's filter for them
-        # long_df = self._transform_to_long_format(df)
-        # numeric_df = long_df[pd.to_numeric(long_df['value'], errors='coerce').notna()].copy()
-        # numeric_df['value'] = pd.to_numeric(numeric_df['value'])
-        
-        return df
+        return self._transform_to_long_format(df)
