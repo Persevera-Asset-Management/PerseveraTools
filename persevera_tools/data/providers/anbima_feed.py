@@ -545,6 +545,10 @@ class AnbimaFeedProvider(DataProvider):
             value_name="value",
         )
         out["source"] = spec.get("source", "anbima")
+        # Converte NaT em colunas datetime para None; out.where(pd.notnull) não é suficiente
+        # porque pandas mantém NaT dentro do dtype datetime64[ns] mesmo após o where.
+        for col in out.select_dtypes(include=["datetime64[ns]"]).columns:
+            out[col] = out[col].astype(object).where(out[col].notna(), None)
         return out.replace({np.nan: None})
 
     def get_data(self, category: str, raw: bool = False, **kwargs) -> pd.DataFrame:

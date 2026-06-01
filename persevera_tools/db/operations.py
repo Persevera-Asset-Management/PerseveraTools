@@ -20,11 +20,12 @@ logger = get_logger(__name__)
 
 def _sanitize_for_psycopg2(data: pd.DataFrame) -> pd.DataFrame:
     """
-    Convert nullable pandas extension dtypes to values psycopg2 can adapt.
+    Convert pandas dtypes to values psycopg2 can adapt.
 
-    ``DataFrame.to_numpy()`` on mixed-type frames uses an object array; missing
-    values in nullable dtypes (``Int64``, ``Float64``, etc.) become ``pd.NA``,
-    which psycopg2 cannot serialize.
+    Handles three cases:
+    - Nullable extension dtypes (``Int64``, ``Float64``, etc.): ``pd.NA`` → ``None``
+    - datetime64 columns: ``NaT`` → ``None``  (psycopg2 serializes pd.NaT as "NaT")
+    - object columns: any remaining pd.NA / np.nan / pd.NaT → ``None``
     """
     out = data.copy()
     for col in out.columns:
@@ -39,6 +40,10 @@ def _sanitize_for_psycopg2(data: pd.DataFrame) -> pd.DataFrame:
                 ).astype('float64')
             else:
                 out[col] = ser.astype(object).where(ser.notna(), None)
+        elif pd.api.types.is_datetime64_any_dtype(ser):
+            # NaT in numpy datetime64 columns: astype(object) converts NaT → pd.NaT object;
+            # where(notna()) then replaces those with Python None for SQL NULL
+            out[col] = ser.astype(object).where(ser.notna(), None)
         elif ser.dtype == object:
             out[col] = ser.map(lambda v: None if pd.isna(v) else v)
     return out
