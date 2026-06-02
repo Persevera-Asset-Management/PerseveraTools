@@ -111,4 +111,4 @@ class DebenturesComProvider(DataProvider):
             self.logger.warning("No data found after parsing.")
             return pd.DataFrame()
         
-        return self._transform_to_long_format(df)
+        return df
