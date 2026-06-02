@@ -3,7 +3,7 @@ from typing import Optional, Union, List
 import pandas as pd
 import numpy as np
 
-from persevera_tools.fixed_income.data import get_emissions, get_series
+from persevera_tools.fixed_income.data import get_emissions, get_series, get_references
 from persevera_tools.utils.dates import get_holidays
 
 
@@ -113,8 +113,22 @@ def calculate_spread(
         series_ipca = get_series(code=codes, source='anbima', category='credito_privado_ipca', start_date=start_date, end_date=end_date, field=field)
         series_ipca = series_ipca.replace(0., np.nan)
         series_ipca_interpolated = series_ipca.pivot_table(index='date', columns='code', values='value').interpolate(limit=5).stack().reset_index()
-        series_ipca_interpolated = pd.merge(series_ipca_interpolated, series_ipca[['code', 'reference']].drop_duplicates(), on=['code'], how='left').dropna().drop_duplicates()
-        series_ipca_interpolated.columns = ['date', 'code', 'value', 'reference']
+        series_ipca_interpolated.columns = ['date', 'code', 'value']
+
+        # The reference (benchmark NTN-B maturity) was moved out of
+        # credito_privado_historico into credito_privado_referencia (code, date, reference).
+        references = get_references(code=codes, start_date=start_date, end_date=end_date)
+        # Forward/back-fill per code so interpolated dates (which have no reference
+        # row of their own) still inherit the asset's benchmark maturity.
+        references = references.sort_values(['code', 'date'])
+        references['reference'] = references.groupby('code')['reference'].ffill().bfill()
+        series_ipca_interpolated = pd.merge(series_ipca_interpolated, references, on=['date', 'code'], how='left')
+        series_ipca_interpolated['reference'] = (
+            series_ipca_interpolated.sort_values(['code', 'date'])
+            .groupby('code')['reference'].ffill().bfill()
+        )
+        series_ipca_interpolated = series_ipca_interpolated.dropna().drop_duplicates()
+        series_ipca_interpolated = series_ipca_interpolated[['date', 'code', 'value', 'reference']]
 
         series_titulos_publicos = get_series(code='NTN-B', category='titulos_publicos', start_date=start_date, end_date=end_date, field=field)
         if isinstance(series_titulos_publicos.index, pd.MultiIndex):

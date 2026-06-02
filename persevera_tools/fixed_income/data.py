@@ -94,6 +94,89 @@ def get_emissions(
     return df
 
 
+def get_references(
+    code: Optional[Union[str, List[str]]] = None,
+    start_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
+    end_date: Optional[Union[str, datetime, pd.Timestamp]] = None) -> pd.DataFrame:
+    """Get reference maturities from the credito_privado_referencia table.
+
+    The ``reference`` dates (e.g. the benchmark NTN-B maturity matched to each
+    IPCA-linked private credit asset) used to live in ``credito_privado_historico``
+    and are now stored in the dedicated ``credito_privado_referencia`` table
+    with columns ``code, date, reference``.
+
+    Args:
+        code: Single code, list of codes, or None to retrieve all codes.
+        start_date: Optional start date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp.
+        end_date: Optional end date filter as string 'YYYY-MM-DD', datetime, or pandas Timestamp.
+    Returns:
+        DataFrame with columns ['date', 'code', 'reference'].
+    Raises:
+        ValueError: If dates are in invalid format or if end_date is before start_date.
+    """
+    codes = []
+    if code is not None:
+        if isinstance(code, str):
+            codes = [code]
+        elif isinstance(code, list):
+            codes = code
+        else:
+            raise ValueError("code must be a string or list of strings")
+
+        if not all(isinstance(c, str) and c for c in codes):
+            raise ValueError("All codes must be non-empty strings")
+
+    start_date_str = None
+    end_date_str = None
+
+    if start_date is not None:
+        if isinstance(start_date, str):
+            try:
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                start_date_str = start_date
+            except ValueError:
+                raise ValueError("start_date string must be in YYYY-MM-DD format")
+        elif isinstance(start_date, (datetime, pd.Timestamp)):
+            start_dt = start_date
+            start_date_str = start_dt.strftime("%Y-%m-%d")
+        else:
+            raise ValueError("start_date must be a string, datetime, or pandas Timestamp")
+
+    if end_date is not None:
+        if isinstance(end_date, str):
+            try:
+                end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+                end_date_str = end_date
+            except ValueError:
+                raise ValueError("end_date string must be in YYYY-MM-DD format")
+        elif isinstance(end_date, (datetime, pd.Timestamp)):
+            end_dt = end_date
+            end_date_str = end_dt.strftime("%Y-%m-%d")
+        else:
+            raise ValueError("end_date must be a string, datetime, or pandas Timestamp")
+
+    if start_date is not None and end_date is not None and start_dt > end_dt:
+        raise ValueError("end_date cannot be before start_date")
+
+    query = """
+        SELECT date, code, reference
+        FROM credito_privado_referencia
+        WHERE 1 = 1
+    """
+
+    if codes:
+        codes_str = "','".join(codes)
+        query += f" AND code IN ('{codes_str}')"
+    if start_date_str:
+        query += f" AND date >= '{start_date_str}'"
+    if end_date_str:
+        query += f" AND date <= '{end_date_str}'"
+
+    query += " ORDER BY date, code"
+
+    return read_sql(query, date_columns=['date', 'reference'])
+
+
 def get_series(
     code: Optional[Union[str, List[str]]] = None,
     start_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
