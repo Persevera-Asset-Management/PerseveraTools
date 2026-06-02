@@ -41,11 +41,13 @@ def _sanitize_for_psycopg2(data: pd.DataFrame) -> pd.DataFrame:
             else:
                 out[col] = ser.astype(object).where(ser.notna(), None)
         elif pd.api.types.is_datetime64_any_dtype(ser):
-            # NaT in numpy datetime64 columns: astype(object) converts NaT → pd.NaT object;
-            # where(notna()) then replaces those with Python None for SQL NULL
-            out[col] = ser.astype(object).where(ser.notna(), None)
+            # Iterating a datetime64[ns] Series yields pd.Timestamp or pd.NaT.
+            # pd.isna(pd.NaT) is True, so this is the only reliable way to replace
+            # NaT with Python None (Series.where/astype tricks may coerce None→NaN).
+            out[col] = [None if pd.isna(v) else v for v in ser]
         elif ser.dtype == object:
-            out[col] = ser.map(lambda v: None if pd.isna(v) else v)
+            # Handles object columns that may contain np.nan, pd.NA, or pd.NaT
+            out[col] = [None if pd.isna(v) else v for v in ser]
     return out
 
 
@@ -74,7 +76,13 @@ def to_sql(data: pd.DataFrame,
         
         # Prepare data for insertion
         data = _sanitize_for_psycopg2(data)
-        data_tuples = [tuple(x) for x in data.to_numpy()]
+        # Final guard: pd.isna covers NaN, NaT, pd.NA and None uniformly.
+        # Necessary because to_numpy() may surface NaT objects from datetime64 columns
+        # that psycopg2 would serialize as the literal string "NaT" instead of NULL.
+        data_tuples = [
+            tuple(None if pd.isna(v) else v for v in row)
+            for row in data.to_numpy()
+        ]
         cols = ','.join(list(data.columns))
         
         # Create SQL query

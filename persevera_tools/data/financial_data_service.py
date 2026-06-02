@@ -356,7 +356,8 @@ class FinancialDataService:
             'anbima_indices', 'anbima_debentures', 'anbima_titulos_publicos', 'anbima_cri_cra',
             'anbima_feed_titulos_publicos_mercado_secundario', 'anbima_feed_titulos_publicos_vna',
             'anbima_feed_titulos_publicos_curvas_juros', 'anbima_feed_debentures_mercado_secundario',
-            'anbima_feed_debentures_curvas_credito', 'anbima_feed_cri_cra_mercado_secundario',
+            'anbima_feed_debentures_curvas_credito', 'anbima_feed_debentures_mais_mercado_secundario',
+            'anbima_feed_cri_cra_mercado_secundario',
             'anbima_feed_fidc_mercado_secundario', 'anbima_feed_indices_resultados_ihfa_fechado',
             'anbima_feed_indices_resultados_ima', 'anbima_feed_indices_resultados_idka',
             'anbima_fundos_lista', 'anbima_fundos_instituicoes',
@@ -402,11 +403,12 @@ class FinancialDataService:
             'anbima_titulos_publicos': (self.anbima, 'anbima_titulos_publicos_historico'),
             'anbima_cri_cra': (self.anbima, 'credito_privado_historico'),
             # ANBIMA Feed (OAuth2) – preços e índices
-            'anbima_feed_titulos_publicos_mercado_secundario': (self.anbima_feed, 'indicadores'),
+            'anbima_feed_titulos_publicos_mercado_secundario': (self.anbima_feed, 'anbima_titulos_publicos_historico'),
             'anbima_feed_titulos_publicos_vna': (self.anbima_feed, 'indicadores'),
             'anbima_feed_titulos_publicos_curvas_juros': (self.anbima_feed, 'indicadores'),
             'anbima_feed_debentures_mercado_secundario': (self.anbima_feed, 'credito_privado_historico'),
             'anbima_feed_debentures_curvas_credito': (self.anbima_feed, 'credito_privado_historico'),
+            'anbima_feed_debentures_mais_mercado_secundario': (self.anbima_feed, 'credito_privado_historico'),
             'anbima_feed_cri_cra_mercado_secundario': (self.anbima_feed, 'credito_privado_historico'),
             'anbima_feed_fidc_mercado_secundario': (self.anbima_feed, 'credito_privado_historico'),
             'anbima_feed_indices_resultados_ihfa_fechado': (self.anbima_feed, 'indicadores'),
@@ -430,9 +432,21 @@ class FinancialDataService:
         
         if source not in providers:
             raise ValueError(f"Unknown source: {source}")
-            
+
+        # Per-table default primary keys.
+        # credito_privado_historico includes 'source' because multiple providers share
+        # the table and may produce identical (code, date, field) for different sources.
+        # anbima_titulos_publicos_historico includes 'maturity' because the same bond
+        # (code) can have different prices on the same date depending on its maturity.
+        table_primary_keys = {
+            'credito_privado_historico': ['code', 'date', 'field', 'source'],
+            'anbima_titulos_publicos_historico': ['code', 'date', 'maturity', 'field'],
+        }
+
         provider, default_table = providers[source]
-        default_primary_keys = ['code', 'date', 'field']
+        default_primary_keys = table_primary_keys.get(
+            table_name or default_table, ['code', 'date', 'field']
+        )
         
         attempt = 0
         last_error = None
@@ -440,6 +454,7 @@ class FinancialDataService:
         while attempt < retry_attempts:
             try:
                 df = provider.get_data(category=source, **kwargs)
+                if 'value' in df.columns: df = df.dropna(subset=['value'])
                 
                 if df.empty:
                     self.logger.warning(f"No data retrieved from {source}")

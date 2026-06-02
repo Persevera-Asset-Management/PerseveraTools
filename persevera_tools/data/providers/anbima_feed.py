@@ -240,23 +240,70 @@ FEED_ENDPOINTS: Dict[str, tuple] = {
 #
 # Quando uma categoria possui entrada aqui, ``AnbimaFeedProvider.get_data`` converte
 # o DataFrame "wide" devolvido pela API para o formato long padronizado
-# ``[date, code, reference?, field, value, source]`` — esperado pelas tabelas
+# ``[date, code, field, value, source]`` — esperado pelas tabelas
 # ``credito_privado_historico`` / ``indicadores`` e compatível com o
 # ``AnbimaProvider`` legado. Use ``raw=True`` em ``get_data`` para receber o JSON
 # bruto sem transformação.
 NORMALIZE_CONFIG: Dict[str, Dict[str, Any]] = {
+    "anbima_feed_titulos_publicos_mercado_secundario": {
+        "rename": {
+            "tipo_titulo": "code",
+            "data_referencia": "date",
+            "data_vencimento": "maturity",
+            "taxa_indicativa": "yield_to_maturity",
+            "taxa_compra": "bid_rate",
+            "taxa_venda": "offer_rate",
+            "pu": "price_close",
+            "desvio_padrao": "std_dev",
+            "intervalo_min_d0": "min_d0",
+            "intervalo_max_d0": "max_d0",
+            "intervalo_min_d1": "min_d1",
+            "intervalo_max_d1": "max_d1",
+        },
+        "id_vars": ["code", "date", "maturity"],
+        "datetime_vars": ["date", "maturity"],
+        "value_vars": [
+            "yield_to_maturity",
+            "bid_rate",
+            "offer_rate",
+            "price_close",
+            "std_dev",
+            "min_d0",
+            "max_d0",
+            "min_d1",
+            "max_d1",
+        ],
+        "source": "anbima",
+    },
+    "anbima_feed_debentures_mercado_secundario": {
+        "rename": {
+            "codigo_ativo": "code",
+            "data_referencia": "date",
+            "taxa_indicativa": "yield_to_maturity",
+            "pu": "price_close",
+            "duration": "duration",
+            "percent_pu_par": "par_percentage",
+        },
+        "id_vars": ["code", "date"],
+        "value_vars": [
+            "yield_to_maturity",
+            "price_close",
+            "duration",
+            "par_percentage",
+        ],
+        "source": "anbima",
+    },
     "anbima_feed_debentures_mais_mercado_secundario": {
         "rename": {
             "codigo_ativo": "code",
             "data_referencia": "date",
-            "referencia_ntnb": "reference",
             "taxa_indicativa": "yield_to_maturity",
             "pu": "price_close",
             "duration": "duration",
             "percent_pu_par": "par_percentage",
             "pu_par": "par_value",
         },
-        "id_vars": ["code", "date", "reference"],
+        "id_vars": ["code", "date"],
         "value_vars": [
             "yield_to_maturity",
             "price_close",
@@ -270,13 +317,12 @@ NORMALIZE_CONFIG: Dict[str, Dict[str, Any]] = {
         "rename": {
             "codigo_ativo": "code",
             "data_referencia": "date",
-            "referencia_ntnb": "reference",
             "taxa_indicativa": "yield_to_maturity",
             "pu": "price_close",
             "duration": "duration",
             "percent_pu_par": "par_percentage",
         },
-        "id_vars": ["code", "date", "reference"],
+        "id_vars": ["code", "date"],
         "value_vars": [
             "yield_to_maturity",
             "price_close",
@@ -315,7 +361,7 @@ class AnbimaFeedProvider(DataProvider):
 
     Formato de saída:
         Por padrão, categorias com entrada em ``NORMALIZE_CONFIG`` são convertidas
-        para o formato long ``[date, code, reference?, field, value, source]``,
+        para o formato long ``[date, code, field, value, source]``,
         pronto para upsert em ``credito_privado_historico``. Categorias sem
         normalização (ou ``get_data(..., raw=True)``) devolvem o JSON da API
         convertido em DataFrame "wide".
@@ -517,7 +563,7 @@ class AnbimaFeedProvider(DataProvider):
     def _normalize_long(df: pd.DataFrame, category: str) -> pd.DataFrame:
         """
         Converte o DataFrame "wide" devolvido pela API para o formato long
-        padronizado ``[date, code, reference?, field, value, source]`` segundo
+        padronizado ``[date, code, field, value, source]`` segundo
         a entrada de ``NORMALIZE_CONFIG`` para ``category``.
 
         Colunas ausentes em ``value_vars`` são silenciosamente descartadas
@@ -533,10 +579,10 @@ class AnbimaFeedProvider(DataProvider):
                 columns=id_vars + ["field", "value", "source"]
             )
 
-        if "date" in df.columns:
-            df["date"] = pd.to_datetime(df["date"], errors="coerce")
-        if "reference" in df.columns:
-            df["reference"] = pd.to_datetime(df["reference"], errors="coerce")
+        # Convert all declared datetime id_vars (default: just "date")
+        for dt_col in spec.get("datetime_vars", ["date"]):
+            if dt_col in df.columns:
+                df[dt_col] = pd.to_datetime(df[dt_col], errors="coerce")
 
         out = df.melt(
             id_vars=id_vars,
@@ -545,10 +591,10 @@ class AnbimaFeedProvider(DataProvider):
             value_name="value",
         )
         out["source"] = spec.get("source", "anbima")
-        # Converte NaT em colunas datetime para None; out.where(pd.notnull) não é suficiente
-        # porque pandas mantém NaT dentro do dtype datetime64[ns] mesmo após o where.
+        # Iterating datetime64[ns] yields pd.Timestamp or pd.NaT; pd.isna(pd.NaT) is True.
+        # This is the only reliable way to replace NaT with None before DB insertion.
         for col in out.select_dtypes(include=["datetime64[ns]"]).columns:
-            out[col] = out[col].astype(object).where(out[col].notna(), None)
+            out[col] = [None if pd.isna(v) else v for v in out[col]]
         return out.replace({np.nan: None})
 
     def get_data(self, category: str, raw: bool = False, **kwargs) -> pd.DataFrame:
@@ -560,8 +606,7 @@ class AnbimaFeedProvider(DataProvider):
             raw: Se ``True``, devolve o JSON da API convertido em DataFrame sem
                 qualquer transformação. Por padrão (``False``), categorias com
                 entrada em ``NORMALIZE_CONFIG`` são automaticamente convertidas
-                para o formato long ``[date, code, reference?, field, value,
-                source]``.
+                para o formato long ``[date, code, field, value, source]``.
             **kwargs: Parâmetros específicos do endpoint:
                 ``data`` (str, YYYY-MM-DD): data pontual. Se omitido em
                     endpoints com parâmetro de data, itera automaticamente

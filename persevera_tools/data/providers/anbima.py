@@ -113,7 +113,7 @@ class AnbimaProvider(DataProvider):
         df = pd.concat(data_frames, ignore_index=True)
         
         df = df.melt(
-            id_vars=['code', 'date', 'reference'], 
+            id_vars=['code', 'date'],
             var_name='field'
         )
         df = df.replace({np.nan: None})
@@ -139,7 +139,7 @@ class AnbimaProvider(DataProvider):
 
         df = pd.DataFrame(data, columns=header)
 
-        df = df[['Código', 'Taxa Indicativa', 'PU', 'Duration', 'Referência NTN-B']]
+        df = df[['Código', 'Taxa Indicativa', 'PU', 'Duration']]
 
         def clean_value(v):
             return v.strip().replace('.', '').replace(',', '.').replace('--', '0') if v.strip() else None
@@ -148,8 +148,7 @@ class AnbimaProvider(DataProvider):
 
         cols_num = ['Taxa Indicativa', 'PU', 'Duration']
         df[cols_num] = df[cols_num].apply(lambda x: pd.to_numeric(x, errors='coerce'))
-        df['Referência NTN-B'] = pd.to_datetime(df['Referência NTN-B'], format='%d/%m/%Y', errors='coerce')
-        df.columns = ['code', 'yield_to_maturity', 'price_close', 'duration', 'reference']
+        df.columns = ['code', 'yield_to_maturity', 'price_close', 'duration']
         df['date'] = date
         return df
 
@@ -266,7 +265,7 @@ class AnbimaProvider(DataProvider):
 
         df = pd.concat(data_frames, ignore_index=True)
         df = df.melt(
-            id_vars=['code', 'date', 'reference'], 
+            id_vars=['code', 'date'],
             var_name='field'
         )
         df = df.dropna(subset=['value'])
@@ -298,7 +297,7 @@ class AnbimaProvider(DataProvider):
         try:
             df = raw.copy()
             df.columns = df.columns.str.strip()
-            df = df[['Código', 'Data de Referência', 'Taxa Indicativa', 'PU', 'Duration', 'Referência NTNB']]
+            df = df[['Código', 'Data de Referência', 'Taxa Indicativa', 'PU', 'Duration']]
         except KeyError:
             return pd.DataFrame()
 
@@ -309,6 +308,5 @@ class AnbimaProvider(DataProvider):
 
         df[['PU', 'Taxa Indicativa']] = df[['PU', 'Taxa Indicativa']].apply(lambda x: pd.to_numeric(x, errors='coerce'))
         df['Data de Referência'] = pd.to_datetime(df['Data de Referência'], format='%d/%m/%Y', errors='coerce')
-        df['Referência NTNB'] = pd.to_datetime(df['Referência NTNB'], format='%d/%m/%Y', errors='coerce')
-        df.columns = ['code', 'date', 'yield_to_maturity', 'price_close', 'duration', 'reference']
+        df.columns = ['code', 'date', 'yield_to_maturity', 'price_close', 'duration']
         return df

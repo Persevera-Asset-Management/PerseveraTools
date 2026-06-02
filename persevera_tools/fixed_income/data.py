@@ -181,8 +181,8 @@ def get_series(
         date_cols = ['date']
     elif category == 'credito_privado_ipca':
         table_name = 'credito_privado_historico'
-        cols = ['date', 'code', 'reference', 'value']
-        date_cols = ['date', 'reference']
+        cols = ['date', 'code', 'value']
+        date_cols = ['date']
     elif category == 'titulos_publicos':
         table_name = 'anbima_titulos_publicos_historico'
         cols = ['date', 'code', 'maturity', 'value']
