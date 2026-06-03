@@ -591,6 +591,7 @@ class AnbimaFeedProvider(DataProvider):
             value_name="value",
         )
         out["source"] = spec.get("source", "anbima")
+        out = out.dropna(subset=["value"])
         # Iterating datetime64[ns] yields pd.Timestamp or pd.NaT; pd.isna(pd.NaT) is True.
         # This is the only reliable way to replace NaT with None before DB insertion.
         for col in out.select_dtypes(include=["datetime64[ns]"]).columns:
@@ -674,6 +675,7 @@ class AnbimaFeedProvider(DataProvider):
             for dt in dates:
                 date_str = dt.strftime("%Y-%m-%d")
                 try:
+                    logger.info(f"Iterando sobre {category} em {date_str}")
                     df = _fetch_single(_build_params(date_str))
                     if not df.empty:
                         frames.append(df)

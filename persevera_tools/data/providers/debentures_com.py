@@ -88,17 +88,6 @@ class DebenturesComProvider(DataProvider):
         df = df.drop_duplicates(subset=['code', 'data_emissao'], keep='last')
         return df
 
-    def _transform_to_long_format(self, df: pd.DataFrame) -> pd.DataFrame:
-        id_vars = ['data_emissao', 'code']
-        value_vars = [col for col in df.columns if col not in id_vars]
-        
-        long_df = df.melt(id_vars=id_vars, value_vars=value_vars, var_name='field', value_name='value')
-        long_df = long_df.rename(columns={'data_emissao': 'date'})
-        
-        long_df['value'] = pd.to_numeric(long_df['value'], errors='coerce')
-        long_df = long_df.dropna(subset=['value'])
-        return long_df
-
     def get_data(self, category: str, data_type: str = 'emissions', **kwargs) -> pd.DataFrame:
         self._log_processing(category)
         if data_type != 'emissions':
