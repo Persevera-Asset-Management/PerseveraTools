@@ -18,6 +18,7 @@ from .providers.debentures_com import DebenturesComProvider
 from .providers.mdic import MDICProvider
 from .providers.b3 import B3Provider
 from .providers.mais_retorno import MaisRetornoProvider
+from .providers.investfy import InvestfyProvider
 from ..db.operations import to_sql
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ class FinancialDataService:
         self.mdic = MDICProvider()
         self.b3 = B3Provider()
         self.mais_retorno = MaisRetornoProvider()
+        self.investfy = InvestfyProvider(start_date=start_date)
         self.logger = logging.getLogger(self.__class__.__name__)
         
     def get_bloomberg_data(
@@ -365,6 +367,7 @@ class FinancialDataService:
             'simplify', 'invesco', 'bcb_focus', 'kraneshares', 'mdic',
             'b3_investor_flow', 'b3_bdi',
             'mais_retorno_debentures', 'mais_retorno_fundos',
+            'investfy_investor_flow',
         ],
         save_to_db: bool = True,
         retry_attempts: int = 3,
@@ -428,6 +431,7 @@ class FinancialDataService:
             'b3_bdi': (self.b3, 'credito_privado_historico'),
             'mais_retorno_debentures': (self.mais_retorno, 'credito_privado_historico'),
             'mais_retorno_fundos': (self.mais_retorno, 'fundos_cvm'),
+            'investfy_investor_flow': (self.investfy, 'indicadores'),
         }
         
         if source not in providers:
