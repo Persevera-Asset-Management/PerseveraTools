@@ -90,12 +90,14 @@ class Settings:
         self.IBKR_ACCESS_TOKEN = os.getenv('PERSEVERA_IBKR_ACCESS_TOKEN')
         self.IBKR_ACCESS_TOKEN_SECRET = os.getenv('PERSEVERA_IBKR_ACCESS_TOKEN_SECRET')
 
-        # Load BTG Pactual Web Platform (RM Admin) configuration
-        self.BTG_CLIENT_ID = os.getenv('PERSEVERA_BTG_CLIENT_ID')
-        self.BTG_CLIENT_SECRET = os.getenv('PERSEVERA_BTG_CLIENT_SECRET')
-        self.BTG_ACCOUNT_ID = os.getenv('PERSEVERA_BTG_ACCOUNT_ID')
-        # Optional: pre-supplied JWT from browser session (bypasses token endpoint)
-        self.BTG_JWT_TOKEN = os.getenv('PERSEVERA_BTG_JWT_TOKEN')
+        # Load BTG Pactual MFO (Wealth Services / BTGWSProvider) configuration
+        self.BTGWS_CLIENT_ID = os.getenv('PERSEVERA_BTGWS_CLIENT_ID')
+        self.BTGWS_CLIENT_SECRET = os.getenv('PERSEVERA_BTGWS_CLIENT_SECRET')
+        self.BTGWS_AUTH_BASE_URL = os.getenv('PERSEVERA_BTGWS_AUTH_BASE_URL')
+        self.BTGWS_ACCOUNTS_BASE_URL = os.getenv('PERSEVERA_BTGWS_ACCOUNTS_BASE_URL')
+        self.BTGWS_POSITIONS_BASE_URL = os.getenv('PERSEVERA_BTGWS_POSITIONS_BASE_URL')
+        self.BTGWS_TIMEOUT = os.getenv('PERSEVERA_BTGWS_TIMEOUT')
+        self.BTGWS_VERIFY_SSL = os.getenv('PERSEVERA_BTGWS_VERIFY_SSL', 'true')
 
         # ANBIMA Feed API (OAuth2 client_credentials)
         self.ANBIMA_FEED_CLIENT_ID = os.getenv('PERSEVERA_ANBIMA_FEED_CLIENT_ID')
