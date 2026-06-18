@@ -1,3 +1,4 @@
+import re
 import time
 import requests
 import logging
@@ -14,6 +15,27 @@ warnings.filterwarnings("ignore", message="Could not infer format, so each eleme
 
 
 logger = get_logger(__name__)
+
+RICH_TEXT_TYPE = "Collaboration~Documents/Document"
+RICH_TEXT_SECRET_FIELD = "Collaboration~Documents/secret"
+DOCUMENT_BATCH_SIZE = 100
+
+def _is_rich_text_type(field_type: Optional[str]) -> bool:
+    return field_type == RICH_TEXT_TYPE
+
+def _is_rich_text_selection(
+    alias: str,
+    spec: Any,
+    rich_text_aliases: Optional[set] = None,
+) -> bool:
+    """Returns True when a q/select entry targets a rich-text document secret."""
+    if rich_text_aliases and alias in rich_text_aliases:
+        return True
+    return (
+        isinstance(spec, list)
+        and len(spec) == 2
+        and spec[1] == RICH_TEXT_SECRET_FIELD
+    )
 
 def _get_fibery_headers() -> Dict[str, str]:
     """Returns the authorization headers for Fibery API."""
@@ -57,7 +79,65 @@ def _get_full_schema() -> Optional[Dict[str, Any]]:
         logger.error(f"Error fetching Fibery schema: {e}", exc_info=True)
         return None
 
-def _get_db_schema() -> Optional[Dict[str, Any]]:
+def _resolve_type_name_field(canonical_type: str, type_fields: List[Dict[str, Any]]) -> str:
+    """
+    Returns the Fibery field path used as the display name for a type.
+
+    Built-in types (e.g. fibery/user) use lowercase ``{suffix}/name``; custom
+    domain types typically use ``{Space}/Name``.
+    """
+    name_candidates: List[str] = []
+    for field in type_fields:
+        if field.get("fibery/collection?"):
+            continue
+
+        field_name = field.get("fibery/name", "")
+        if "_deleted" in field_name:
+            continue
+
+        local_name = field_name.rsplit("/", 1)[-1]
+        if local_name not in ("Name", "name"):
+            continue
+
+        field_type = field.get("fibery/type") or ""
+        if field_type in ("text", "fibery/text") or "text" in field_type.lower():
+            name_candidates.append(field_name)
+
+    for candidate in name_candidates:
+        if candidate.endswith("/Name"):
+            return candidate
+    if name_candidates:
+        return name_candidates[0]
+
+    if canonical_type.startswith("fibery/"):
+        suffix = canonical_type.split("/", 1)[1]
+        return f"{suffix}/name"
+
+    return f"{canonical_type.split('/')[0]}/Name"
+
+def _build_type_name_field_map(full_schema: Dict[str, Any]) -> Dict[str, str]:
+    """Maps each type's canonical name to its human-readable name field."""
+    type_name_fields: Dict[str, str] = {}
+    for type_def in full_schema.get("fibery/types", []):
+        canonical_name = type_def["fibery/name"]
+        type_name_fields[canonical_name] = _resolve_type_name_field(
+            canonical_name,
+            type_def.get("fibery/fields", []),
+        )
+    return type_name_fields
+
+def _get_type_name_field(related_type: Optional[str], type_name_fields: Dict[str, str]) -> str:
+    """Resolves the display-name sub-field for a related Fibery type."""
+    if related_type and related_type in type_name_fields:
+        return type_name_fields[related_type]
+    if isinstance(related_type, str) and related_type.startswith("fibery/"):
+        suffix = related_type.split("/", 1)[1]
+        return f"{suffix}/name"
+    if isinstance(related_type, str) and "/" in related_type:
+        return f"{related_type.split('/')[0]}/Name"
+    return "fibery/id"
+
+def _get_db_schema() -> Optional[Tuple[Dict[str, Any], Dict[str, str]]]:
     """
     Retrieves the entire Fibery database schema and organizes it for easy access.
     Returns a dictionary mapping display names to their canonical names, fields, and field metadata.
@@ -65,7 +145,8 @@ def _get_db_schema() -> Optional[Dict[str, Any]]:
     full_schema = _get_full_schema()
     if not full_schema:
         return None
-        
+
+    type_name_fields = _build_type_name_field_map(full_schema)
     db_schema = {}
 
     for T in full_schema.get("fibery/types", []):
@@ -92,17 +173,19 @@ def _get_db_schema() -> Optional[Dict[str, Any]]:
             is_enum = bool(field_type) and (
                 "enum" in field_type_str.lower() or is_workflow_state or is_type_component
             )
+            is_rich_text = _is_rich_text_type(field_type)
             
             fields[field_name] = {
                 'is_relation': is_relation,
                 'is_enum': is_enum,
+                'is_rich_text': is_rich_text,
                 'type': field_type,
                 'meta': field_meta
             }
         
         # Add system fields
-        fields["fibery/id"] = {'is_relation': False, 'is_enum': False, 'type': 'uuid', 'meta': {}}
-        fields["fibery/public-id"] = {'is_relation': False, 'is_enum': False, 'type': 'text', 'meta': {}}
+        fields["fibery/id"] = {'is_relation': False, 'is_enum': False, 'is_rich_text': False, 'type': 'uuid', 'meta': {}}
+        fields["fibery/public-id"] = {'is_relation': False, 'is_enum': False, 'is_rich_text': False, 'type': 'text', 'meta': {}}
         
         db_schema[display_name] = {
             'canonical_name': canonical_name,
@@ -110,9 +193,12 @@ def _get_db_schema() -> Optional[Dict[str, Any]]:
         }
         
     logger.info("Successfully fetched and processed database schema with field metadata.")
-    return db_schema
+    return db_schema, type_name_fields
 
-def _build_field_selection(fields_dict: Dict[str, Dict], table_name: str) -> Dict[str, Any]:
+def _build_field_selection(
+    fields_dict: Dict[str, Dict],
+    type_name_fields: Dict[str, str],
+) -> Dict[str, Any]:
     """
     Builds the q/select dictionary for Fibery query.
     Handles primitive fields and relational fields appropriately.
@@ -145,10 +231,12 @@ def _build_field_selection(fields_dict: Dict[str, Dict], table_name: str) -> Dic
             'fibery/bool',
             'fibery/int',
         ]
-        unsupported_types = [
-            'Collaboration~Documents/Document'
-        ]
+        unsupported_types: List[str] = []
         
+        if field_info.get('is_rich_text') or _is_rich_text_type(field_type_str):
+            selection[alias] = [field_name, RICH_TEXT_SECRET_FIELD]
+            continue
+
         if field_info['is_enum']:
             # For enum fields, get the enum/name
             selection[alias] = [field_name, 'enum/name']
@@ -170,7 +258,8 @@ def _build_field_selection(fields_dict: Dict[str, Dict], table_name: str) -> Dic
                 elif field_info.get('meta', {}).get('fibery/type-component?', {}):
                     selection[alias] = [field_name, 'enum/name']
                 else:
-                    selection[alias] = [field_name, f'{related_table_name.split("/")[0]}/Name']
+                    name_field = _get_type_name_field(related_table_name, type_name_fields)
+                    selection[alias] = [field_name, name_field]
 
         else:
             field_type_value = field_info.get('type')
@@ -181,7 +270,8 @@ def _build_field_selection(fields_dict: Dict[str, Dict], table_name: str) -> Dic
             if field_type_value in primitive_types or not field_type_value:
                 selection[alias] = [field_name]
             else:
-                selection[alias] = [field_name, f'{field_type_value.split("/")[0]}/Name']
+                name_field = _get_type_name_field(field_type_value, type_name_fields)
+                selection[alias] = [field_name, name_field]
     
     return selection
 
@@ -196,6 +286,9 @@ def _execute_fibery_page(
     page_size: int,
     max_field_retries: int = 3,
     max_timeout_retries: int = 3,
+    type_name_fields: Optional[Dict[str, str]] = None,
+    fields_dict: Optional[Dict[str, Dict]] = None,
+    rich_text_aliases: Optional[set] = None,
 ) -> Tuple[Optional[List[Any]], Dict[str, Any]]:
     """
     Executes a single paginated Fibery query with retry logic for field errors,
@@ -220,6 +313,7 @@ def _execute_fibery_page(
     secured_retries = 0
     max_secured_retries = max(20, len(field_selection))
     secured_attempted: set = set()
+    protected_aliases = rich_text_aliases or set()
 
     while field_retries < max_field_retries and secured_retries < max_secured_retries:
         query: Dict[str, Any] = {
@@ -284,9 +378,17 @@ def _execute_fibery_page(
                                 field_selection[alias_to_fix] = [problematic_field, "enum/name"]
                                 logger.info(f"Trying enum/name for '{problematic_field}'")
                             elif len(current_spec) == 2 and current_spec[1] == "enum/name":
-                                space_name = problematic_field.split("/")[0]
-                                field_selection[alias_to_fix] = [problematic_field, f"{space_name}/Name"]
-                                logger.info(f"Trying Space/Name for '{problematic_field}'")
+                                related_type = None
+                                if fields_dict and problematic_field in fields_dict:
+                                    related_type = fields_dict[problematic_field].get("type")
+                                name_field = _get_type_name_field(
+                                    related_type,
+                                    type_name_fields or {},
+                                )
+                                field_selection[alias_to_fix] = [problematic_field, name_field]
+                                logger.info(
+                                    f"Trying display name field '{name_field}' for '{problematic_field}'"
+                                )
                             else:
                                 logger.warning(f"Could not fix '{problematic_field}'. Removing from query.")
                                 del field_selection[alias_to_fix]
@@ -314,6 +416,9 @@ def _execute_fibery_page(
 
                     def _downgrade_or_remove(alias: str) -> str:
                         spec = field_selection[alias]
+                        if _is_rich_text_selection(alias, spec, protected_aliases):
+                            del field_selection[alias]
+                            return "remove"
                         if (
                             isinstance(spec, list)
                             and len(spec) == 2
@@ -348,6 +453,7 @@ def _execute_fibery_page(
                         alias for alias, spec in field_selection.items()
                         if (
                             alias not in secured_attempted
+                            and not _is_rich_text_selection(alias, spec, protected_aliases)
                             and isinstance(spec, list)
                             and len(spec) == 2
                             and spec[1] not in ("fibery/id", "enum/name")
@@ -371,7 +477,8 @@ def _execute_fibery_page(
                     remove_targets = [
                         alias for alias, spec in field_selection.items()
                         if (
-                            isinstance(spec, list)
+                            not _is_rich_text_selection(alias, spec, protected_aliases)
+                            and isinstance(spec, list)
                             and len(spec) == 2
                             and spec[1] == "fibery/id"
                         )
@@ -393,6 +500,31 @@ def _execute_fibery_page(
                     )
                     return None, field_selection
 
+                # --- Unknown sub-field on relation: apply API suggestion if present ---
+                maybe_match = re.search(r'Maybe you meant "([^"]+)"', error_message)
+                wrong_field_match = re.search(r'"([^"]+)" field was not found', error_message)
+                if maybe_match and wrong_field_match:
+                    suggested_field = maybe_match.group(1)
+                    wrong_field = wrong_field_match.group(1)
+                    alias_to_fix = next(
+                        (
+                            alias for alias, spec in field_selection.items()
+                            if isinstance(spec, list)
+                            and len(spec) == 2
+                            and spec[1] == wrong_field
+                        ),
+                        None,
+                    )
+                    if alias_to_fix:
+                        field_selection[alias_to_fix] = [field_selection[alias_to_fix][0], suggested_field]
+                        logger.warning(
+                            f"Replacing invalid sub-field '{wrong_field}' with "
+                            f"'{suggested_field}' for '{field_selection[alias_to_fix][0]}'."
+                        )
+                        field_retries += 1
+                        timeout_retries = 0
+                        continue
+
                 logger.error(f"Fibery API error: {error_message}")
                 logger.debug(f"Error details: {error_info}")
                 return None, field_selection
@@ -411,20 +543,109 @@ def _execute_fibery_page(
     )
     return None, field_selection
 
+def _extract_document_secret(value: Any) -> Optional[str]:
+    """Extracts a collaborative document secret from a rich-text field value."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value or None
+    if isinstance(value, dict):
+        return value.get(RICH_TEXT_SECRET_FIELD)
+    return None
+
+def _fetch_documents_batch(
+    secrets: List[str],
+    document_format: str = "plain-text",
+) -> Dict[str, str]:
+    """Fetches document contents for a batch of Fibery document secrets."""
+    if not secrets:
+        return {}
+
+    api_url = _get_fibery_api_url(f"documents/commands?format={document_format}")
+    headers = _get_fibery_headers()
+    content_by_secret: Dict[str, str] = {}
+
+    for start in range(0, len(secrets), DOCUMENT_BATCH_SIZE):
+        chunk = secrets[start:start + DOCUMENT_BATCH_SIZE]
+        payload = {
+            "command": "get-documents",
+            "args": [{"secret": secret} for secret in chunk],
+        }
+
+        try:
+            response = requests.post(api_url, headers=headers, json=payload)
+            response.raise_for_status()
+            documents = response.json()
+        except requests.exceptions.RequestException as exc:
+            logger.error(f"Error fetching Fibery documents: {exc}", exc_info=True)
+            continue
+
+        if not isinstance(documents, list):
+            logger.warning("Unexpected response when fetching Fibery documents.")
+            continue
+
+        for document in documents:
+            if not isinstance(document, dict):
+                continue
+            secret = document.get("secret")
+            content = document.get("content")
+            if secret and content is not None:
+                content_by_secret[secret] = content
+
+    return content_by_secret
+
+def _resolve_rich_text_in_dataframe(
+    df: pd.DataFrame,
+    rich_text_aliases: List[str],
+    document_format: str = "plain-text",
+) -> pd.DataFrame:
+    """Replaces rich-text secret payloads with their document contents."""
+    if df.empty or not rich_text_aliases:
+        return df
+
+    columns_to_resolve = [alias for alias in rich_text_aliases if alias in df.columns]
+    if not columns_to_resolve:
+        return df
+
+    secrets = {
+        secret
+        for alias in columns_to_resolve
+        for value in df[alias]
+        if (secret := _extract_document_secret(value))
+    }
+    if not secrets:
+        return df
+
+    logger.info(f"Resolving {len(secrets)} rich-text document(s)...")
+    content_by_secret = _fetch_documents_batch(sorted(secrets), document_format=document_format)
+
+    for alias in columns_to_resolve:
+        df[alias] = df[alias].map(
+            lambda value: content_by_secret.get(_extract_document_secret(value) or "", None)
+            if _extract_document_secret(value)
+            else None
+        )
+
+    return df
+
 def read_fibery(
     table_name: str,
     include_fibery_fields: bool = False,
+    resolve_rich_text: bool = True,
+    rich_text_format: str = "plain-text",
     where_filter: Optional[List[Any]] = None,
     params: Optional[Dict[str, Any]] = None,
     page_size: int = 1000,
 ) -> pd.DataFrame:
     """
     Reads all data from a Fibery table and returns it as a pandas DataFrame.
-    Automatically handles relational fields, enums, pagination, and timeouts.
+    Automatically handles relational fields, enums, rich text, pagination, and timeouts.
 
     Args:
         table_name: The display name of the Fibery table to read.
         include_fibery_fields: Whether to include Fibery system fields (created-by, rank, etc.).
+        resolve_rich_text: Whether to fetch and expand rich-text fields into plain content.
+        rich_text_format: Document format for rich-text resolution (plain-text, md, html).
         where_filter: Optional filter condition using Fibery's q/where syntax.
             Example: [">=", ["fibery/creation-date"], "$cutoffDate"]
         params: Optional dictionary of parameter values for the where_filter.
@@ -443,10 +664,11 @@ def read_fibery(
             page_size=500,
         )
     """
-    db_schema = _get_db_schema()
-    if not db_schema:
+    schema_result = _get_db_schema()
+    if not schema_result:
         return pd.DataFrame()
 
+    db_schema, type_name_fields = schema_result
     table_meta = db_schema.get(table_name)
     if not table_meta:
         logger.error(f"Table '{table_name}' not found in the processed schema.")
@@ -464,12 +686,18 @@ def read_fibery(
         for field_name, field_info in all_fields.items()
         if not any(s in field_name for s in str_to_remove)
     }
+    rich_text_aliases = [
+        field_name.split("/")[-1]
+        for field_name, field_info in fields_to_query.items()
+        if field_info.get("is_rich_text")
+    ]
+    rich_text_alias_set = set(rich_text_aliases)
 
     logger.info(f"Reading data from Fibery table: {canonical_name} (page_size={page_size})")
 
     api_url = _get_fibery_api_url("commands")
     headers = _get_fibery_headers()
-    field_selection = _build_field_selection(fields_to_query, canonical_name)
+    field_selection = _build_field_selection(fields_to_query, type_name_fields)
 
     all_entities: List[Any] = []
     offset = 0
@@ -485,6 +713,9 @@ def read_fibery(
             params=params,
             offset=offset,
             page_size=page_size,
+            type_name_fields=type_name_fields,
+            fields_dict=fields_to_query,
+            rich_text_aliases=rich_text_alias_set,
         )
 
         if page_entities is None:
@@ -507,7 +738,16 @@ def read_fibery(
 
     df = pd.DataFrame(all_entities)
 
+    if resolve_rich_text and rich_text_aliases:
+        df = _resolve_rich_text_in_dataframe(
+            df,
+            rich_text_aliases,
+            document_format=rich_text_format,
+        )
+
     for col in df.columns:
+        if col in rich_text_alias_set:
+            continue
         if df[col].dtype in ["object", "string"] and df[col].notnull().any():
             try:
                 df[col] = pd.to_datetime(df[col]).dt.tz_convert("America/Sao_Paulo")
