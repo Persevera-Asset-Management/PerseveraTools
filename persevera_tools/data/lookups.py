@@ -4,6 +4,7 @@ from typing import Dict, Optional
 
 from ..config import settings
 from ..db.operations import read_sql
+from ..db.fibery import read_fibery
 
 
 def get_codes(source: Optional[str] = None, category: Optional[str] = None) -> Dict[str, str]:
@@ -18,7 +19,7 @@ def get_codes(source: Optional[str] = None, category: Optional[str] = None) -> D
 
 def get_securities_by_exchange(exchange: Optional[str] = None) -> Dict[str, str]:
     """
-    Get securities information from the database by exchange.
+    Get securities information from Fibery by exchange.
 
     If no exchange is provided, all active securities will be returned.
 
@@ -28,17 +29,14 @@ def get_securities_by_exchange(exchange: Optional[str] = None) -> Dict[str, str]
     Returns:
         A dictionary mapping Bloomberg tickers to internal codes.
     """
-    query = "SELECT code, code_exchange FROM b3_active_securities"
-    params = {}
-    
+    df = read_fibery(table_name='Inv-Rsrch-Quant/Ações Ativas')
+
     if exchange:
-        query += f" WHERE code_exchange = '{exchange}'"
-        
-    df = read_sql(query)
+        df = df[df['Região'] == exchange]
 
     if df.empty:
         return {}
 
-    df = df.assign(code_bloomberg=df['code'] + ' ' + df['code_exchange'] + ' Equity')
+    df = df.assign(code_bloomberg=df['Ativo'] + ' ' + df['Região'] + ' Equity')
     df = df.set_index('code_bloomberg')
-    return df['code'].to_dict()
+    return df['Name'].to_dict()
