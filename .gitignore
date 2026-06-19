@@ -180,4 +180,4 @@ cython_debug/
 
 persevera_tools/data/providers/ws_ibkr.py
 
-persevera_tools/data/factor_zoo/
+#persevera_tools/data/factor_zoo/
