@@ -9,7 +9,6 @@ from xbbg import blp
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_codes, get_securities_by_exchange
 from ...config import settings
-from ...db.operations import read_sql
 from ...db.fibery import read_fibery
 
 DATA_PATH = settings.DATA_PATH
@@ -27,6 +26,12 @@ class BloombergProvider(DataProvider):
     COUNTRY_CURRENCIES = {
         'BZ': 'BRL',
         'US': 'USD',
+    }
+
+    _FREQUENCY_MAP = {
+        'Diário': 'daily',
+        'Trimestral': 'quarterly',
+        'Consenso': 'consensus',
     }
     
     def __init__(
@@ -65,13 +70,32 @@ class BloombergProvider(DataProvider):
             raise DataRetrievalError(f"Failed to load indicators additional fields mappings: {str(e)}")
 
     def _load_company_field_mappings(self) -> None:
-        """Load field mappings from the configuration file."""
+        """Load company field mappings from Fibery, grouped by category."""
         try:
-            base = read_sql(f"SELECT * FROM factor_zoo_equity_signals")
+            df_factors = read_fibery(table_name='Inv-Rsrch-Quant/Definições dos Fatores')
+            base = df_factors[
+                (df_factors['state'] == 'Ativo') &
+                df_factors['Código Bloomberg'].notna()
+            ][['Categoria Independente', 'Código Bloomberg', 'Name', 'Frequência']].rename(
+                columns={
+                    'Categoria Independente': 'category',
+                    'Código Bloomberg': 'bloomberg_code',
+                    'Name': 'mnemonic',
+                    'Frequência': 'frequency',
+                }
+            )
+            base['frequency'] = base['frequency'].map(self._FREQUENCY_MAP)
+
             self.field_mappings = base.groupby('category').apply(
                 lambda x: x.set_index('bloomberg_code')['mnemonic'].to_dict()
             ).to_dict()
             self.frequencies = base.groupby('category')['frequency'].first().to_dict()
+
+            # ANNOUNCEMENT_DT has no Bloomberg code in Fibery but is required
+            # for quarterly date adjustment in _adjust_quarterly_dates.
+            for category, frequency in self.frequencies.items():
+                if frequency == 'quarterly':
+                    self.field_mappings[category]['ANNOUNCEMENT_DT'] = 'ANNOUNCEMENT_DT'
         except Exception as e:
             raise DataRetrievalError(f"Failed to load field mappings: {str(e)}")
 
