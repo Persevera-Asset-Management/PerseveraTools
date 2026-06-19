@@ -14,6 +14,9 @@ Optional environment variables:
   - PERSEVERA_BTGWS_POSITIONS_BASE_URL (default: https://api.btgpactual.com/iaas-api-position)
   - PERSEVERA_BTGWS_TIMEOUT            (default: 30)
   - PERSEVERA_BTGWS_VERIFY_SSL         (default: true)
+  - PERSEVERA_BTGWS_REQUEST_DELAY      (default: 1.0 — pausa entre contas em bulk)
+  - PERSEVERA_BTGWS_MAX_RETRIES        (default: 5)
+  - PERSEVERA_BTGWS_RETRY_BACKOFF      (default: 2.0 — base do backoff exponencial)
 """
 
 from __future__ import annotations
@@ -44,6 +47,12 @@ _AUTH_TOKEN_PATH = "/api/v1/authorization/oauth2/accesstoken"
 _ACCOUNTS_PATH = "/api/v1/account-base/accounts"
 _POSITION_PATH = "/api/v1/position/{account_number}"  # {account_number} substituted at runtime
 _TOKEN_DEFAULT_EXPIRES_SECONDS = 15 * 60  # BTG MFO tokens are valid ~15 minutes
+
+_RETRY_STATUS_CODES = frozenset({429, 502, 503, 504})
+_DEFAULT_REQUEST_DELAY = 0.5
+_DEFAULT_MAX_RETRIES = 5
+_DEFAULT_RETRY_BACKOFF = 2.0
+_MIN_429_BACKOFF_SECONDS = 5.0
 
 # Asset classes returned inside each position response.
 # Used by _extract_asset_class() and get_position_by_asset_class().
@@ -114,6 +123,9 @@ class BTGWSProvider(DataProvider):
         positions_base_url: Optional[str] = None,
         timeout_seconds: int = 30,
         verify_ssl: Optional[bool] = None,
+        request_delay: Optional[float] = None,
+        max_retries: Optional[int] = None,
+        retry_backoff: Optional[float] = None,
     ):
         super().__init__(start_date=start_date)
 
@@ -147,10 +159,38 @@ class BTGWSProvider(DataProvider):
         else:
             self.verify_ssl = verify_ssl
 
+        delay_env = getattr(settings, "BTGWS_REQUEST_DELAY", None)
+        self.request_delay = (
+            float(request_delay)
+            if request_delay is not None
+            else float(delay_env) if delay_env else _DEFAULT_REQUEST_DELAY
+        )
+
+        retries_env = getattr(settings, "BTGWS_MAX_RETRIES", None)
+        self.max_retries = (
+            int(max_retries)
+            if max_retries is not None
+            else int(retries_env) if retries_env else _DEFAULT_MAX_RETRIES
+        )
+
+        backoff_env = getattr(settings, "BTGWS_RETRY_BACKOFF", None)
+        self.retry_backoff = (
+            float(retry_backoff)
+            if retry_backoff is not None
+            else float(backoff_env) if backoff_env else _DEFAULT_RETRY_BACKOFF
+        )
+
         self._access_token: Optional[str] = None
         self._access_token_expiry_epoch: float = 0.0
 
         self._validate_credentials()
+        logger.info(
+            "BTG rate limiting: %.1fs delay between bulk account requests, "
+            "%d max retries, %.1fs retry backoff",
+            self.request_delay,
+            self.max_retries,
+            self.retry_backoff,
+        )
 
     # ------------------------------------------------------------------
     # Public DataProvider interface
@@ -264,10 +304,12 @@ class BTGWSProvider(DataProvider):
         accounts_df = self.get_accounts()
         dfs: List[pd.DataFrame] = []
 
-        for account in self._iter_accounts(accounts_df, skip_funds=skip_funds):
+        for idx, account in enumerate(self._iter_accounts(accounts_df, skip_funds=skip_funds)):
             acc_number = account.get("accountNumber") or account.get("account_number")
             if not acc_number:
                 continue
+            if idx > 0 and self.request_delay > 0:
+                time.sleep(self.request_delay)
             try:
                 logger.info("Fetching position for account %s …", acc_number)
                 df = self.get_position(acc_number)
@@ -350,10 +392,12 @@ class BTGWSProvider(DataProvider):
         accounts_df = self.get_accounts()
         dfs: List[pd.DataFrame] = []
 
-        for account in self._iter_accounts(accounts_df, skip_funds=skip_funds):
+        for idx, account in enumerate(self._iter_accounts(accounts_df, skip_funds=skip_funds)):
             acc_number = account.get("accountNumber") or account.get("account_number")
             if not acc_number:
                 continue
+            if idx > 0 and self.request_delay > 0:
+                time.sleep(self.request_delay)
             try:
                 logger.info("Fetching %s for account %s …", asset_class, acc_number)
                 df = self.get_position_by_asset_class(acc_number, asset_class)
@@ -631,7 +675,6 @@ class BTGWSProvider(DataProvider):
         base_url: Optional[str] = None,
     ) -> Any:
         url = self._build_url(path, base_url=base_url)
-        headers = self._build_headers()
 
         token_preview = (self._access_token or "")[:20] + "..."
         logger.info("BTG Request: %s %s", method, url)
@@ -639,29 +682,79 @@ class BTGWSProvider(DataProvider):
         if params:
             logger.debug("BTG Params: %s", params)
 
-        try:
-            resp = requests.request(
-                method=method,
-                url=url,
-                headers=headers,
-                params=params,
-                json=json,
-                timeout=self.timeout_seconds,
-                verify=self.verify_ssl,
-            )
-            resp.raise_for_status()
-            if resp.content and "application/json" in resp.headers.get("Content-Type", ""):
-                return resp.json()
-            return {}
-        except requests.HTTPError as exc:
-            detail = ""
+        last_exc: Optional[Exception] = None
+        resp: Optional[requests.Response] = None
+
+        for attempt in range(self.max_retries):
+            headers = self._build_headers()
             try:
-                detail = f" | body: {resp.text}"
-            except Exception:
-                pass
-            raise DataRetrievalError(f"BTG request failed [{method} {url}] {exc}{detail}")
-        except requests.RequestException as exc:
-            raise DataRetrievalError(f"BTG request error [{method} {url}]: {exc}")
+                resp = requests.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    params=params,
+                    json=json,
+                    timeout=self.timeout_seconds,
+                    verify=self.verify_ssl,
+                )
+                resp.raise_for_status()
+                if resp.content and "application/json" in resp.headers.get("Content-Type", ""):
+                    return resp.json()
+                return {}
+            except requests.HTTPError as exc:
+                last_exc = exc
+                status = resp.status_code if resp is not None else None
+                if (
+                    status in _RETRY_STATUS_CODES
+                    and attempt < self.max_retries - 1
+                ):
+                    wait = self._retry_wait_seconds(attempt, status, resp)
+                    logger.warning(
+                        "BTG HTTP %s em %s (tentativa %d/%d); "
+                        "aguardando %.0fs antes de tentar novamente.",
+                        status,
+                        url,
+                        attempt + 1,
+                        self.max_retries,
+                        wait,
+                    )
+                    time.sleep(wait)
+                    continue
+                detail = ""
+                try:
+                    if resp is not None:
+                        detail = f" | body: {resp.text}"
+                except Exception:
+                    pass
+                raise DataRetrievalError(
+                    f"BTG request failed [{method} {url}] {exc}{detail}"
+                ) from exc
+            except requests.RequestException as exc:
+                raise DataRetrievalError(f"BTG request error [{method} {url}]: {exc}") from exc
+
+        raise DataRetrievalError(
+            f"BTG request failed após {self.max_retries} tentativas "
+            f"[{method} {url}]: {last_exc}"
+        ) from last_exc
+
+    def _retry_wait_seconds(
+        self,
+        attempt: int,
+        status: Optional[int],
+        resp: Optional[requests.Response],
+    ) -> float:
+        if resp is not None:
+            retry_after = resp.headers.get("Retry-After")
+            if retry_after:
+                try:
+                    return max(float(retry_after), self.retry_backoff)
+                except ValueError:
+                    pass
+
+        wait = self.retry_backoff * (2 ** attempt)
+        if status == 429:
+            return max(wait, _MIN_429_BACKOFF_SECONDS)
+        return wait
 
     def _build_url(self, path: str, *, base_url: Optional[str] = None) -> str:
         if path.startswith("http://") or path.startswith("https://"):

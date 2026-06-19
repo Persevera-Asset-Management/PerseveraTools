@@ -6,6 +6,11 @@ from ..config import settings
 from ..db.operations import read_sql
 from ..db.fibery import read_fibery
 
+_DENOMINATION_TO_EXCHANGE = {
+    'BRL': 'BZ',
+    'USD': 'US',
+}
+
 
 def get_codes(source: Optional[str] = None, category: Optional[str] = None) -> Dict[str, str]:
     """Get codes from indicadores_definicoes table."""
@@ -30,13 +35,14 @@ def get_securities_by_exchange(exchange: Optional[str] = None) -> Dict[str, str]
         A dictionary mapping Bloomberg tickers to internal codes.
     """
     df = read_fibery(table_name='Inv-Rsrch-Quant/Ações Ativas')
+    df = df.assign(code_exchange=df['Denominação'].map(_DENOMINATION_TO_EXCHANGE))
 
     if exchange:
-        df = df[df['Região'] == exchange]
+        df = df[df['code_exchange'] == exchange]
 
     if df.empty:
         return {}
 
-    df = df.assign(code_bloomberg=df['Ativo'] + ' ' + df['Região'] + ' Equity')
+    df = df.assign(code_bloomberg=df['Ativo'] + ' ' + df['code_exchange'] + ' Equity')
     df = df.set_index('code_bloomberg')
     return df['Name'].to_dict()

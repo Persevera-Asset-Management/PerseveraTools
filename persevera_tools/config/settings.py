@@ -98,6 +98,9 @@ class Settings:
         self.BTGWS_POSITIONS_BASE_URL = os.getenv('PERSEVERA_BTGWS_POSITIONS_BASE_URL')
         self.BTGWS_TIMEOUT = os.getenv('PERSEVERA_BTGWS_TIMEOUT')
         self.BTGWS_VERIFY_SSL = os.getenv('PERSEVERA_BTGWS_VERIFY_SSL', 'true')
+        self.BTGWS_REQUEST_DELAY = os.getenv('PERSEVERA_BTGWS_REQUEST_DELAY')
+        self.BTGWS_MAX_RETRIES = os.getenv('PERSEVERA_BTGWS_MAX_RETRIES')
+        self.BTGWS_RETRY_BACKOFF = os.getenv('PERSEVERA_BTGWS_RETRY_BACKOFF')
 
         # ANBIMA Feed API (OAuth2 client_credentials)
         self.ANBIMA_FEED_CLIENT_ID = os.getenv('PERSEVERA_ANBIMA_FEED_CLIENT_ID')
