@@ -111,25 +111,29 @@ def calculate_spread(
     elif index_code == 'IPCA':
         codes = emissions['code'].tolist()
         series_ipca = get_series(code=codes, source='anbima', category='credito_privado_ipca', start_date=start_date, end_date=end_date, field=field)
-        series_ipca = series_ipca.replace(0., np.nan)
-        series_ipca_interpolated = series_ipca.pivot_table(index='date', columns='code', values='value').interpolate(limit=5).stack().reset_index()
-        series_ipca_interpolated.columns = ['date', 'code', 'value']
+        series_ipca['value'] = series_ipca['value'].mask(series_ipca['value'] == 0.)
 
-        # The reference (benchmark NTN-B maturity) was moved out of
-        # credito_privado_historico into credito_privado_referencia (code, date, reference).
+        # Pivot once to wide and interpolate — avoids the costly stack/re-pivot cycle.
+        series_wide = (
+            series_ipca.drop_duplicates(subset=['date', 'code'])
+            .pivot(index='date', columns='code', values='value')
+            .interpolate(limit=5)
+        )
+
+        # References: pivot to wide (date × code → reference maturity) so that the
+        # NTN-B lookup can be done with a single vectorised reindex instead of two
+        # long-format merges. Forward/back-fill covers interpolated dates.
         references = get_references(code=codes, start_date=start_date, end_date=end_date)
-        # Forward/back-fill per code so interpolated dates (which have no reference
-        # row of their own) still inherit the asset's benchmark maturity.
         references = references.sort_values(['code', 'date'])
         references['reference'] = references.groupby('code')['reference'].ffill().bfill()
-        series_ipca_interpolated = pd.merge(series_ipca_interpolated, references, on=['date', 'code'], how='left')
-        series_ipca_interpolated['reference'] = (
-            series_ipca_interpolated.sort_values(['code', 'date'])
-            .groupby('code')['reference'].ffill().bfill()
+        ref_wide = (
+            references.drop_duplicates(subset=['date', 'code'])
+            .pivot(index='date', columns='code', values='reference')
+            .reindex(index=series_wide.index)
+            .ffill().bfill()
         )
-        series_ipca_interpolated = series_ipca_interpolated.dropna().drop_duplicates()
-        series_ipca_interpolated = series_ipca_interpolated[['date', 'code', 'value', 'reference']]
 
+        # NTN-B yields: pivot to (date × maturity) lookup table.
         series_titulos_publicos = get_series(code='NTN-B', category='titulos_publicos', start_date=start_date, end_date=end_date, field=field)
         if isinstance(series_titulos_publicos.index, pd.MultiIndex):
             series_titulos_publicos = series_titulos_publicos.reset_index()
@@ -140,19 +144,33 @@ def calculate_spread(
             if 'anbima' in unique_sources:
                 series_titulos_publicos = series_titulos_publicos[series_titulos_publicos['source'] == 'anbima']
             series_titulos_publicos = series_titulos_publicos.drop(columns=['source'])
-        series_merged = pd.merge(series_ipca_interpolated, series_titulos_publicos, left_on=['date', 'reference'], right_on=['date', 'maturity'], how='inner')
-        series_merged = series_merged.drop(columns=['code_y', 'maturity', 'reference'])
-        series_merged.columns = ['date', 'code', 'yield_to_maturity', 'ytm_ntnb']
-        series_merged['spread'] = series_merged['yield_to_maturity'] - series_merged['ytm_ntnb']
-        series = series_merged.pivot_table(index='date', columns='code', values='spread')
-        series = series.interpolate(limit=5)
+        ntnb_wide = (
+            series_titulos_publicos.drop_duplicates(subset=['date', 'maturity'])
+            .pivot(index='date', columns='maturity', values='value')
+        )
+
+        # Vectorised NTN-B lookup: for each (date, code) pair fetch the yield at
+        # the code's benchmark maturity using a stacked-index reindex — no long-format
+        # merge needed.
+        ntnb_stacked = ntnb_wide.stack()
+        ref_long = ref_wide.stack().rename('reference')
+        lookup_idx = pd.MultiIndex.from_arrays(
+            [ref_long.index.get_level_values('date'), ref_long.to_numpy()]
+        )
+        ytm_ntnb_wide = (
+            pd.Series(ntnb_stacked.reindex(lookup_idx).to_numpy(), index=ref_long.index)
+            .unstack('code')
+        )
+
+        # Spread: single wide-format subtraction, then interpolate gaps.
+        series = (series_wide - ytm_ntnb_wide).interpolate(limit=5)
     else:
         raise ValueError("Invalid index code")
 
     emissions = emissions[emissions['code'].isin(series.columns)]
 
     volume_map = emissions.set_index('code')['volume_emissao']
-    series = series.replace(0., np.nan)
+    series = series.mask(series == 0.)
     volume_df = series.where(series.isna(), 1) * volume_map
     weight_df = volume_df.div(volume_df.sum(axis=1), axis=0)
 
@@ -162,19 +180,36 @@ def calculate_spread(
     spread['weighted_mean'] = (series * weight_df).sum(axis=1)
 
     if calculate_distribution:
-        spread['count_above_mean'] = (series.T > spread['mean'].values).T.sum(axis=1)
-        spread['count_under_mean'] = (series.T <= spread['mean'].values).T.sum(axis=1)
-        spread['volume_above_mean'] = ((series.T > spread['mean'].values).T * volume_df).sum(axis=1)
-        spread['volume_under_mean'] = ((series.T <= spread['mean'].values).T * volume_df).sum(axis=1)
+        # Extract raw numpy arrays once and use column broadcasting to avoid
+        # repeated .T round-trips and redundant boolean recomputations.
+        vals = series.to_numpy()
+        mean_col = spread['mean'].to_numpy()[:, np.newaxis]
 
-        spread['count_yield_under_neg50bp'] = ((series.T < -0.50)).T.sum(axis=1)
-        spread['count_yield_neg50_0bp'] = ((series.T >= -0.50) & (series.T < 0.)).T.sum(axis=1)
-        spread['count_yield_0_50bp'] = ((series.T >= 0.) & (series.T < 0.50)).T.sum(axis=1)
-        spread['count_yield_50_75bp'] = ((series.T >= 0.50) & (series.T < 0.75)).T.sum(axis=1)
-        spread['count_yield_75_100bp'] = ((series.T >= 0.75) & (series.T < 1.00)).T.sum(axis=1)
-        spread['count_yield_100_150bp'] = ((series.T >= 1.00) & (series.T < 1.50)).T.sum(axis=1)
-        spread['count_yield_150_250bp'] = ((series.T >= 1.50) & (series.T < 2.50)).T.sum(axis=1)
-        spread['count_yield_above_250bp'] = (series.T >= 2.50).T.sum(axis=1)
+        above_mean = pd.DataFrame(vals > mean_col, index=series.index, columns=series.columns)
+        under_mean = pd.DataFrame(vals <= mean_col, index=series.index, columns=series.columns)
+
+        spread['count_above_mean'] = above_mean.sum(axis=1)
+        spread['count_under_mean'] = under_mean.sum(axis=1)
+        spread['volume_above_mean'] = above_mean.mul(volume_df).sum(axis=1)
+        spread['volume_under_mean'] = under_mean.mul(volume_df).sum(axis=1)
+
+        # Compute each threshold mask once; reuse to build non-overlapping buckets.
+        lt_neg50 = vals < -0.50
+        lt_0     = vals <  0.00
+        lt_50    = vals <  0.50
+        lt_75    = vals <  0.75
+        lt_100   = vals <  1.00
+        lt_150   = vals <  1.50
+        lt_250   = vals <  2.50
+
+        spread['count_yield_under_neg50bp'] = lt_neg50.sum(axis=1)
+        spread['count_yield_neg50_0bp']     = (lt_0    & ~lt_neg50).sum(axis=1)
+        spread['count_yield_0_50bp']        = (lt_50   & ~lt_0   ).sum(axis=1)
+        spread['count_yield_50_75bp']       = (lt_75   & ~lt_50  ).sum(axis=1)
+        spread['count_yield_75_100bp']      = (lt_100  & ~lt_75  ).sum(axis=1)
+        spread['count_yield_100_150bp']     = (lt_150  & ~lt_100 ).sum(axis=1)
+        spread['count_yield_150_250bp']     = (lt_250  & ~lt_150 ).sum(axis=1)
+        spread['count_yield_above_250bp']   = (~lt_250).sum(axis=1)
 
     return spread
 
