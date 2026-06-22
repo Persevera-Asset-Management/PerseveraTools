@@ -631,7 +631,7 @@ def _resolve_rich_text_in_dataframe(
 def read_fibery(
     table_name: str,
     include_fibery_fields: bool = False,
-    resolve_rich_text: bool = True,
+    resolve_rich_text: bool = False,
     rich_text_format: str = "plain-text",
     where_filter: Optional[List[Any]] = None,
     params: Optional[Dict[str, Any]] = None,
