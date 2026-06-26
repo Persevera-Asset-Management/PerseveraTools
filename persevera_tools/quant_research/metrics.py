@@ -161,6 +161,57 @@ def calculate_annualized_volatility(close_prices: pd.Series, frequency: str = 'w
     returns = close_prices.resample(resample_rule).last().pct_change().dropna()
     return float(returns.std() * np.sqrt(days_scale))
 
+def calculate_ewma_volatility(
+    close_prices: pd.Series,
+    decay: float = None,
+    span: int = None,
+    halflife: float = None,
+    annualize: bool = True,
+    trading_days: int = 252,
+) -> pd.Series:
+    """
+    Computes EWMA volatility from a series of close prices.
+
+    Uses the RiskMetrics variance update on squared returns:
+    ``var_t = decay * var_{t-1} + (1 - decay) * r_t^2``.
+
+    Exactly one of ``decay``, ``span``, or ``halflife`` may be specified. If none
+    are given, ``decay=0.94`` (RiskMetrics daily default) is used.
+
+    Args:
+        close_prices: Daily close prices series.
+        decay: EWMA decay factor (lambda), between 0 and 1.
+        span: Span parameter for pandas ``ewm`` (mutually exclusive with ``decay``
+            and ``halflife``).
+        halflife: Half-life in periods for pandas ``ewm`` (mutually exclusive with
+            ``decay`` and ``span``).
+        annualize: If True, scales volatility by ``sqrt(trading_days)``.
+        trading_days: Number of trading days used for annualization. Defaults to 252.
+
+    Returns:
+        A pandas Series containing the EWMA volatility at each date.
+    """
+    ewm_params = [p for p in (decay, span, halflife) if p is not None]
+    if len(ewm_params) > 1:
+        raise ValueError("Specify at most one of decay, span, or halflife.")
+
+    returns = close_prices.pct_change()
+    if decay is not None:
+        if not 0 < decay < 1:
+            raise ValueError("decay must be between 0 and 1.")
+        ewm_kwargs = {"alpha": 1 - decay, "adjust": False}
+    elif span is not None:
+        ewm_kwargs = {"span": span, "adjust": False}
+    elif halflife is not None:
+        ewm_kwargs = {"halflife": halflife, "adjust": False}
+    else:
+        ewm_kwargs = {"alpha": 1 - 0.94, "adjust": False}
+
+    vol = np.sqrt(returns.pow(2).ewm(**ewm_kwargs).mean())
+    if annualize:
+        vol = vol * np.sqrt(trading_days)
+    return vol
+
 def calculate_max_drawdown(close_prices: pd.Series) -> float:
     """
     Computes the maximum drawdown from a series of close prices.
