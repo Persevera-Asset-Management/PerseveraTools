@@ -157,15 +157,20 @@ def _get_db_schema() -> Optional[Tuple[Dict[str, Any], Dict[str, str]]]:
         for field in T.get("fibery/fields", []):
             field_name = field["fibery/name"]
             
-            # Skip collections and deleted fields
-            if field.get("fibery/collection?") or "_deleted" in field_name:
+            field_meta = field.get("fibery/meta", {})
+
+            # Skip collections and deleted fields (collection? may live in meta)
+            if (
+                field.get("fibery/collection?")
+                or field_meta.get("fibery/collection?")
+                or "_deleted" in field_name
+            ):
                 continue
             
             # Determine field type
-            field_meta = field.get("fibery/meta", {})
             field_type = field.get("fibery/type")
             
-            is_relation = "fibery/relation" in field_meta
+            is_relation = bool(field_meta.get("fibery/relation"))
             # Consider Fibery workflow state fields as enums as well
             field_type_str = (field_type or "")
             is_workflow_state = "workflow/state" in field_type_str.lower()
@@ -212,6 +217,9 @@ def _build_field_selection(
     selection = {}
     
     for field_name, field_info in fields_dict.items():
+        if field_info.get("meta", {}).get("fibery/collection?"):
+            continue
+
         # Create a clean alias (remove space prefix)
         alias = field_name.split('/')[-1]
         field_type_str = (field_info.get('type') or '')
@@ -266,8 +274,18 @@ def _build_field_selection(
             # Skip unsupported heavy/non-primitive types (e.g. Documents)
             if field_type_value in unsupported_types:
                 continue
+            # Scalar Fibery system fields (e.g. fibery/rank) share the same path as their type
+            # and must be fetched directly, not dereferenced via a non-existent */name sub-field.
+            is_scalar_fibery_field = (
+                isinstance(field_type_value, str)
+                and field_name == field_type_value
+            )
             # Directly fetch primitive types
-            if field_type_value in primitive_types or not field_type_value:
+            if (
+                field_type_value in primitive_types
+                or not field_type_value
+                or is_scalar_fibery_field
+            ):
                 selection[alias] = [field_name]
             else:
                 name_field = _get_type_name_field(field_type_value, type_name_fields)
@@ -407,7 +425,11 @@ def _execute_fibery_page(
                 lowered_message = error_message.lower()
                 if "secured field" in lowered_message or "use sub query expression" in lowered_message:
                     error_data = error_info.get("data", {})
-                    field_path = error_data.get("field") or error_data.get("path")
+                    field_path = (
+                        error_data.get("field")
+                        or error_data.get("path")
+                        or error_data.get("field-expr")
+                    )
                     problematic_field: Optional[str] = None
                     if isinstance(field_path, list) and field_path:
                         problematic_field = field_path[0]
@@ -677,9 +699,9 @@ def read_fibery(
     canonical_name = table_meta["canonical_name"]
     all_fields = table_meta["fields"]
 
-    str_to_remove = ["_deleted", "Collaboration", "Description", "created-by", "comments/comments"]
+    str_to_remove = ["_deleted", "Collaboration", "Description", "comments/comments"]
     if not include_fibery_fields:
-        str_to_remove.extend(["fibery/created-by", "fibery/rank"])
+        str_to_remove.extend(["fibery/created-by", "fibery/rank", "created-by"])
 
     fields_to_query = {
         field_name: field_info
