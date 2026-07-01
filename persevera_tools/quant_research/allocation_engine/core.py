@@ -9,6 +9,7 @@ Suporta:
 
 Restrições configuráveis:
 - Alocação por cliente entre [min_pct, max_pct] do PL
+- Exposição máxima por emissor (max_issuer_pct), via concentracao_emissores_rf no snapshot
 - Caixa mínimo pós-alocação (min_cash_pct_after)
 - Posição existente (opcional): considera exposição atual no cálculo do gap
 
@@ -23,6 +24,17 @@ import math
 from dataclasses import dataclass, field
 from itertools import combinations
 from typing import Optional
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def normalize_issuer(issuer: Optional[str]) -> Optional[str]:
+    """Normaliza nome de emissor para comparação consistente."""
+    if not issuer:
+        return None
+    return " ".join(issuer.upper().split())
 
 
 # ---------------------------------------------------------------------------
@@ -48,8 +60,11 @@ class Asset:
     total_units: Optional[int] = None    # None → contínuo
     unit_price: Optional[float] = None   # None → contínuo
     total_value: Optional[float] = None  # obrigatório se contínuo
+    issuer: Optional[str] = None         # emissor; chave compatível com o snapshot
 
     def __post_init__(self):
+        if self.issuer is not None:
+            self.issuer = normalize_issuer(self.issuer)
         if self.is_discrete:
             self.total_value = self.total_units * self.unit_price
         elif self.total_value is None:
@@ -77,12 +92,16 @@ class Client:
         Usado quando AllocationConfig.consider_existing = True
         para calcular o gap até o target.
 
+    existing_by_issuer: dict {emissor: valor_atual_em_brl}
+        Exposição agregada em RF por emissor (concentracao_emissores_rf).
+
     officer: nome do assessor/officer (opcional, para filtros externos).
     """
     code: str
     pl: float
     cash: float
     existing_positions: dict[str, float] = field(default_factory=dict)
+    existing_by_issuer: dict[str, float] = field(default_factory=dict)
     officer: Optional[str] = None
 
     @property
@@ -100,6 +119,8 @@ class AllocationConfig:
     objective: str = "max_clients"    # 'max_clients' | 'max_volume'
     topup: bool = True                # distribuir cotas/valor remanescente
     topup_method: str = "proportional"  # 'proportional' | 'equal'
+    max_issuer_pct: Optional[float] = None  # teto por emissor (% PL); None = desligado
+    issuer_unknown_policy: str = "warn_allow"  # 'warn_allow' | 'block'
 
     def __post_init__(self):
         if not 0.0 <= self.min_pct <= 1.0:
@@ -122,6 +143,15 @@ class AllocationConfig:
             raise ValueError(
                 f"topup_method deve ser 'proportional' ou 'equal', recebido: '{self.topup_method}'"
             )
+        if self.max_issuer_pct is not None and not 0.0 <= self.max_issuer_pct <= 1.0:
+            raise ValueError(
+                f"max_issuer_pct deve estar em [0, 1], recebido: {self.max_issuer_pct}"
+            )
+        if self.issuer_unknown_policy not in ("warn_allow", "block"):
+            raise ValueError(
+                f"issuer_unknown_policy deve ser 'warn_allow' ou 'block', "
+                f"recebido: '{self.issuer_unknown_policy}'"
+            )
 
 
 @dataclass
@@ -137,6 +167,10 @@ class ClientAllocation:
     cash_before: float
     cash_after: float     # caixa após TODAS as alocações do cliente nesta rodada
     cash_pct_after: float
+    issuer: Optional[str] = None
+    issuer_exposure_before_pct: Optional[float] = None
+    issuer_exposure_after_pct: Optional[float] = None
+    binding_constraint: Optional[str] = None
 
 
 @dataclass
@@ -147,6 +181,7 @@ class AllocationResult:
     total_value_allocated: float
     per_asset: dict[str, dict]   # {ticker: {allocated, remaining, n_clients, is_discrete}}
     config: AllocationConfig
+    warnings: list[str] = field(default_factory=list)
 
     def to_dataframe(self):
         """Converte para pandas DataFrame (requer pandas instalado)."""
@@ -172,6 +207,11 @@ class AllocationResult:
             f"Volume total alocado     : R${self.total_value_allocated:,.2f}",
             "",
         ]
+        if self.warnings:
+            lines.append("Avisos:")
+            for warning in self.warnings:
+                lines.append(f"  - {warning}")
+            lines.append("")
         for ticker, info in self.per_asset.items():
             discrete = info.get("is_discrete", True)
             unit_label = "cotas" if discrete else "R$"
@@ -227,6 +267,7 @@ class AllocationEngine:
         Retorna AllocationResult com todas as alocações e metadados.
         """
         cfg = self.config
+        warnings = self._collect_warnings(assets)
 
         # 1. Para cada (cliente, ativo): calcular range válido de alocação
         eligibility = self._build_eligibility(clients, assets)
@@ -242,11 +283,60 @@ class AllocationEngine:
             raw = self._topup(clients, assets, raw, eligibility)
 
         # 4. Montar resultado
-        return self._build_result(clients, assets, raw)
+        return self._build_result(clients, assets, raw, warnings)
 
     # ------------------------------------------------------------------
     # Eligibility
     # ------------------------------------------------------------------
+
+    def _collect_warnings(self, assets: list[Asset]) -> list[str]:
+        warnings: list[str] = []
+        if self.config.max_issuer_pct is None:
+            return warnings
+        for asset in assets:
+            if not asset.issuer:
+                if self.config.issuer_unknown_policy == "warn_allow":
+                    warnings.append(
+                        f"Ativo '{asset.ticker}' sem emissor definido; "
+                        "limite por emissor ignorado para este ativo."
+                    )
+        return warnings
+
+    def _issuer_headroom(
+        self,
+        client: Client,
+        asset: Asset,
+        issuer_allocated: Optional[dict[tuple[str, str], float]] = None,
+    ) -> Optional[float]:
+        """Folga em R$ até max_issuer_pct, ou None se limite desligado."""
+        cfg = self.config
+        if cfg.max_issuer_pct is None or not asset.issuer:
+            return None
+        pl = client.pl
+        if pl <= 0:
+            return 0.0
+        round_val = 0.0
+        if issuer_allocated is not None:
+            round_val = issuer_allocated.get((client.code, asset.issuer), 0.0)
+        existing = client.existing_by_issuer.get(asset.issuer, 0.0)
+        return max(0.0, cfg.max_issuer_pct * pl - existing - round_val)
+
+    def _apply_issuer_cap(
+        self,
+        client: Client,
+        asset: Asset,
+        max_val: float,
+        max_u: float,
+        issuer_allocated: Optional[dict[tuple[str, str], float]] = None,
+    ) -> tuple[float, float]:
+        headroom = self._issuer_headroom(client, asset, issuer_allocated)
+        if headroom is None:
+            return max_val, max_u
+        capped_val = min(max_val, headroom)
+        if asset.is_discrete:
+            capped_u = math.floor(capped_val / asset.unit_price)
+            return capped_u * asset.unit_price, float(capped_u)
+        return capped_val, capped_val
 
     def _build_eligibility(
         self,
@@ -270,10 +360,29 @@ class AllocationEngine:
                 target_min_val = max(0.0, cfg.min_pct * pl - existing)
                 target_max_val = max(0.0, cfg.max_pct * pl - existing)
 
+                if cfg.max_issuer_pct is not None:
+                    if not asset.issuer:
+                        if cfg.issuer_unknown_policy == "block":
+                            result[(client.code, asset.ticker)] = {
+                                "eligible": False,
+                                "reason": "emissor desconhecido",
+                            }
+                            continue
+                    else:
+                        existing_issuer = client.existing_by_issuer.get(asset.issuer, 0.0)
+                        target_max_issuer = max(
+                            0.0, cfg.max_issuer_pct * pl - existing_issuer
+                        )
+                        target_max_val = min(target_max_val, target_max_issuer)
+
                 if target_max_val <= 0:
-                    # Já está no target ou acima — não aloca mais
+                    reason = "posição existente já >= max_pct"
+                    if cfg.max_issuer_pct is not None and asset.issuer:
+                        existing_issuer = client.existing_by_issuer.get(asset.issuer, 0.0)
+                        if existing_issuer >= cfg.max_issuer_pct * pl:
+                            reason = "exposição ao emissor já >= max_issuer_pct"
                     result[(client.code, asset.ticker)] = {"eligible": False,
-                        "reason": "posição existente já >= max_pct"}
+                        "reason": reason}
                     continue
 
                 if asset.is_discrete:
@@ -319,6 +428,7 @@ class AllocationEngine:
                     "cash_available": max_spend,
                     "existing": existing,
                     "existing_pct": existing_pct,
+                    "issuer": asset.issuer,
                 }
 
         return result
@@ -371,17 +481,31 @@ class AllocationEngine:
             for subset_idx in candidate_subsets:
                 # Construir alocação do ativo primário para este subset
                 primary_alloc: dict[str, float] = {}
+                issuer_allocated: dict[tuple[str, str], float] = {}
                 total_primary = 0.0
                 valid = True
 
                 for i in subset_idx:
                     cod, min_u = primary_candidates[i]
+                    client = next(c for c in clients if c.code == cod)
+                    _, effective_min_u = self._apply_issuer_cap(
+                        client, primary, primary.value_for(min_u), min_u, issuer_allocated
+                    )
+                    if effective_min_u < min_u:
+                        valid = False
+                        break
+                    min_u = effective_min_u
                     total_primary += min_u
                     if total_primary > (primary.total_units if primary.is_discrete
                                         else primary.total_value):
                         valid = False
                         break
                     primary_alloc[cod] = min_u
+                    if primary.issuer:
+                        key = (cod, primary.issuer)
+                        issuer_allocated[key] = (
+                            issuer_allocated.get(key, 0.0) + primary.value_for(min_u)
+                        )
 
                 if not valid:
                     continue
@@ -397,10 +521,19 @@ class AllocationEngine:
                     sec_candidates = self._sorted_candidates(
                         clients, sec_asset, eligibility,
                         cash_overrides=cash_residual,
+                        issuer_allocated=issuer_allocated,
                     )
                     used = 0.0
                     cap = sec_asset.total_units if sec_asset.is_discrete else sec_asset.total_value
                     for cod, min_u in sec_candidates:
+                        client = next(c for c in clients if c.code == cod)
+                        _, effective_min_u = self._apply_issuer_cap(
+                            client, sec_asset, sec_asset.value_for(min_u), min_u,
+                            issuer_allocated,
+                        )
+                        if effective_min_u < min_u:
+                            continue
+                        min_u = effective_min_u
                         val = sec_asset.value_for(min_u)
                         if used + (min_u if sec_asset.is_discrete else val) > cap + 1e-9:
                             continue
@@ -409,6 +542,9 @@ class AllocationEngine:
                         secondary_alloc[(cod, sec_asset.ticker)] = min_u
                         cash_residual[cod] -= val
                         used += min_u if sec_asset.is_discrete else val
+                        if sec_asset.issuer:
+                            key = (cod, sec_asset.issuer)
+                            issuer_allocated[key] = issuer_allocated.get(key, 0.0) + val
 
                 # Combinar: único por cliente
                 assignment: dict[tuple[str, str], float] = {}
@@ -446,7 +582,9 @@ class AllocationEngine:
         """
         assignment: dict[tuple[str, str], float] = {}
         cash_residual = {c.code: c.cash for c in clients}
+        issuer_allocated: dict[tuple[str, str], float] = {}
         pl_map = {c.code: c.pl for c in clients}
+        client_map = {c.code: c for c in clients}
 
         for asset in assets:
             cap = asset.total_units if asset.is_discrete else asset.total_value
@@ -458,8 +596,12 @@ class AllocationEngine:
                 key=lambda x: -x[1].get("max_val", 0),
             )
             for cod, elig in candidates:
+                client = client_map[cod]
                 max_u = elig["max_units"]
                 max_val = elig["max_val"]
+                max_val, max_u = self._apply_issuer_cap(
+                    client, asset, max_val, max_u, issuer_allocated
+                )
                 # Re-check cash with current residual
                 avail = cash_residual[cod] - self.config.min_cash_pct_after * pl_map[cod]
                 if asset.is_discrete:
@@ -472,8 +614,12 @@ class AllocationEngine:
                     if alloc_u < elig["min_units"]:
                         continue
                     assignment[(cod, asset.ticker)] = alloc_u
-                    cash_residual[cod] -= alloc_u * asset.unit_price
+                    val = alloc_u * asset.unit_price
+                    cash_residual[cod] -= val
                     used += alloc_u
+                    if asset.issuer:
+                        key = (cod, asset.issuer)
+                        issuer_allocated[key] = issuer_allocated.get(key, 0.0) + val
                 else:
                     effective_max_v = min(max_val, avail)
                     remaining_cap = cap - used
@@ -483,6 +629,9 @@ class AllocationEngine:
                     assignment[(cod, asset.ticker)] = alloc_v
                     cash_residual[cod] -= alloc_v
                     used += alloc_v
+                    if asset.issuer:
+                        key = (cod, asset.issuer)
+                        issuer_allocated[key] = issuer_allocated.get(key, 0.0) + alloc_v
 
         return assignment
 
@@ -504,12 +653,19 @@ class AllocationEngine:
         cfg = self.config
         assignment = dict(assignment)
         asset_map = {a.ticker: a for a in assets}
+        client_map = {c.code: c for c in clients}
 
         # Cash residual pós-alocação inicial
         cash_res = {c.code: c.cash for c in clients}
+        issuer_allocated: dict[tuple[str, str], float] = {}
         pl_map = {c.code: c.pl for c in clients}
         for (cod, ticker), units in assignment.items():
-            cash_res[cod] -= asset_map[ticker].value_for(units)
+            asset = asset_map[ticker]
+            val = asset.value_for(units)
+            cash_res[cod] -= val
+            if asset.issuer:
+                key = (cod, asset.issuer)
+                issuer_allocated[key] = issuer_allocated.get(key, 0.0) + val
 
         for asset in assets:
             allocated_clients = [(cod, units) for (cod, t), units in assignment.items()
@@ -529,6 +685,11 @@ class AllocationEngine:
             for cod, cur_u in allocated_clients:
                 elig = eligibility.get((cod, asset.ticker), {})
                 max_u = elig.get("max_units", cur_u)
+                max_val = elig.get("max_val", asset.value_for(cur_u))
+                client = client_map[cod]
+                max_val, max_u = self._apply_issuer_cap(
+                    client, asset, max_val, max_u, issuer_allocated
+                )
                 avail_cash = cash_res[cod] - cfg.min_cash_pct_after * pl_map[cod]
                 if asset.is_discrete:
                     max_u_cash = math.floor(avail_cash / asset.unit_price)
@@ -567,6 +728,9 @@ class AllocationEngine:
                         continue
                     assignment[(cod, asset.ticker)] += add
                     cash_res[cod] -= asset.value_for(add)
+                    if asset.issuer:
+                        key = (cod, asset.issuer)
+                        issuer_allocated[key] = issuer_allocated.get(key, 0.0) + asset.value_for(add)
                     absorption[cod] -= add
                     if absorption[cod] <= 1e-6:
                         del absorption[cod]
@@ -582,6 +746,11 @@ class AllocationEngine:
                         if absorption.get(cod, 0) >= add:
                             assignment[(cod, asset.ticker)] += add
                             cash_res[cod] -= asset.value_for(add)
+                            if asset.issuer:
+                                key = (cod, asset.issuer)
+                                issuer_allocated[key] = (
+                                    issuer_allocated.get(key, 0.0) + asset.value_for(add)
+                                )
                             absorption[cod] -= add
                             leftover -= add
                     break
@@ -597,17 +766,25 @@ class AllocationEngine:
         clients: list[Client],
         assets: list[Asset],
         assignment: dict[tuple[str, str], float],
+        warnings: Optional[list[str]] = None,
     ) -> AllocationResult:
         cfg = self.config
         pl_map = {c.code: c.pl for c in clients}
         cash_map = {c.code: c.cash for c in clients}
         existing_map = {c.code: c.existing_positions for c in clients}
+        issuer_map = {c.code: c.existing_by_issuer for c in clients}
         asset_map = {a.ticker: a for a in assets}
 
         # Compute cumulative spend per client
         spend: dict[str, float] = {}
+        issuer_round: dict[tuple[str, str], float] = {}
         for (cod, ticker), units in assignment.items():
-            spend[cod] = spend.get(cod, 0.0) + asset_map[ticker].value_for(units)
+            asset = asset_map[ticker]
+            val = asset.value_for(units)
+            spend[cod] = spend.get(cod, 0.0) + val
+            if asset.issuer:
+                key = (cod, asset.issuer)
+                issuer_round[key] = issuer_round.get(key, 0.0) + val
 
         allocations = []
         for (cod, ticker), units in sorted(assignment.items()):
@@ -618,6 +795,24 @@ class AllocationEngine:
             existing = existing_map[cod].get(ticker, 0.0) if cfg.consider_existing else 0.0
             total_exp = (existing + val) / pl if pl > 0 else 0.0
             cash_after = cash_before - spend[cod]
+
+            issuer_before_pct = None
+            issuer_after_pct = None
+            binding = None
+            if cfg.max_issuer_pct is not None and asset.issuer:
+                existing_issuer = issuer_map[cod].get(asset.issuer, 0.0)
+                round_before = issuer_round.get((cod, asset.issuer), 0.0) - val
+                issuer_before_pct = (existing_issuer + round_before) / pl if pl > 0 else 0.0
+                issuer_after_pct = (existing_issuer + round_before + val) / pl if pl > 0 else 0.0
+                asset_cap = cfg.max_pct * pl - existing
+                issuer_cap = cfg.max_issuer_pct * pl - existing_issuer - round_before
+                if issuer_cap <= asset_cap + 1e-6 and val > 0:
+                    binding = "issuer"
+                elif asset_cap <= issuer_cap + 1e-6 and val > 0:
+                    binding = "asset"
+                else:
+                    binding = "cash" if val > 0 else None
+
             allocations.append(ClientAllocation(
                 client_code=cod,
                 ticker=ticker,
@@ -629,6 +824,10 @@ class AllocationEngine:
                 cash_before=cash_before,
                 cash_after=cash_after,
                 cash_pct_after=cash_after / pl if pl > 0 else 0.0,
+                issuer=asset.issuer,
+                issuer_exposure_before_pct=issuer_before_pct,
+                issuer_exposure_after_pct=issuer_after_pct,
+                binding_constraint=binding,
             ))
 
         per_asset = {}
@@ -652,6 +851,7 @@ class AllocationEngine:
             total_value_allocated=sum(a.value for a in allocations),
             per_asset=per_asset,
             config=cfg,
+            warnings=warnings or [],
         )
 
     # ------------------------------------------------------------------
@@ -664,10 +864,11 @@ class AllocationEngine:
         asset: Asset,
         eligibility: dict,
         cash_overrides: Optional[dict[str, float]] = None,
+        issuer_allocated: Optional[dict[tuple[str, str], float]] = None,
     ) -> list[tuple[str, float]]:
         """
         Retorna [(client_code, min_units_or_val)] ordenados por min_units asc.
-        Aplica cash_overrides se fornecido (para constraint conjunta multi-ativo).
+        Aplica cash_overrides e issuer_allocated se fornecidos.
         """
         cfg = self.config
         result = []
@@ -683,6 +884,12 @@ class AllocationEngine:
                 avail = cash - cfg.min_cash_pct_after * client.pl
                 if avail < min_v:
                     continue
+
+            _, effective_min_u = self._apply_issuer_cap(
+                client, asset, min_v, min_u, issuer_allocated
+            )
+            if effective_min_u < min_u:
+                continue
 
             result.append((client.code, min_u))
 

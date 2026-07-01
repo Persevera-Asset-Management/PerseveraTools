@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from .core import Client
+from .core import Client, normalize_issuer
 
 
 def load_snapshot(
@@ -69,11 +69,21 @@ def load_snapshot(
                 if ticker:
                     existing[ticker] = existing.get(ticker, 0.0) + pos.get("saldo_brl", 0.0)
 
+        # Exposição por emissor (RF agregada no snapshot)
+        existing_by_issuer: dict[str, float] = {}
+        for emissor, info in d.get("concentracao_emissores_rf", {}).items():
+            key = normalize_issuer(emissor)
+            if key:
+                existing_by_issuer[key] = (
+                    existing_by_issuer.get(key, 0.0) + info.get("saldo_brl", 0.0)
+                )
+
         clients.append(Client(
             code=cod,
             pl=pl,
             cash=cash,
             existing_positions=existing,
+            existing_by_issuer=existing_by_issuer,
             officer=officer,
         ))
 

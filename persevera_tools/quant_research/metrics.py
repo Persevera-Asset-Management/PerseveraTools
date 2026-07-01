@@ -105,7 +105,7 @@ def calculate_annualized_return(close_prices: pd.Series) -> float:
     Returns:
         Annualized return as a float, or NaN if the series is empty.
     """
-    returns = close_prices.pct_change().dropna()
+    returns = close_prices.pct_change(fill_method=None).dropna()
     n = len(returns)
     if n == 0:
         return np.nan
@@ -125,11 +125,11 @@ def calculate_consistency(close_prices: pd.Series, benchmark: pd.Series = None) 
     Returns:
         Fraction of positive (or outperforming) months as a float, or NaN if no monthly data.
     """
-    monthly = close_prices.resample("ME").last().pct_change().dropna()
+    monthly = close_prices.resample("ME").last().pct_change(fill_method=None).dropna()
     if len(monthly) == 0:
         return np.nan
     if benchmark is not None:
-        monthly_bm = benchmark.resample("ME").last().pct_change().dropna()
+        monthly_bm = benchmark.resample("ME").last().pct_change(fill_method=None).dropna()
         aligned = pd.concat([monthly, monthly_bm], axis=1, join='inner').dropna()
         if len(aligned) == 0:
             return np.nan
@@ -158,7 +158,7 @@ def calculate_annualized_volatility(close_prices: pd.Series, frequency: str = 'w
     if frequency not in freq_map:
         raise ValueError(f"Invalid frequency: {frequency}. Choose from {list(freq_map)}")
     resample_rule, days_scale = freq_map[frequency]
-    returns = close_prices.resample(resample_rule).last().pct_change().dropna()
+    returns = close_prices.resample(resample_rule).last().pct_change(fill_method=None).dropna()
     return float(returns.std() * np.sqrt(days_scale))
 
 def calculate_ewma_volatility(
@@ -195,7 +195,7 @@ def calculate_ewma_volatility(
     if len(ewm_params) > 1:
         raise ValueError("Specify at most one of decay, span, or halflife.")
 
-    returns = close_prices.pct_change()
+    returns = close_prices.pct_change(fill_method=None)
     if decay is not None:
         if not 0 < decay < 1:
             raise ValueError("decay must be between 0 and 1.")
@@ -255,7 +255,7 @@ def calculate_sortino_ratio(close_prices: pd.Series, risk_free_rate: float) -> f
     Returns:
         Sortino ratio as a float, or NaN if downside deviation is zero or unavailable.
     """
-    returns = close_prices.pct_change().dropna()
+    returns = close_prices.pct_change(fill_method=None).dropna()
     neg = returns[returns < 0]
     if len(neg) == 0:
         return np.nan
@@ -288,6 +288,6 @@ def calculate_tracking_error(series_a: pd.Series, series_b: pd.Series, trading_d
         float: The annualized tracking error.
     """
     aligned_data = pd.concat([series_a, series_b], axis=1, join='inner')
-    returns = aligned_data.dropna().pct_change().dropna()
+    returns = aligned_data.dropna().pct_change(fill_method=None).dropna()
     difference = returns.iloc[:, 0] - returns.iloc[:, 1]
     return np.sqrt(trading_days) * difference.std()

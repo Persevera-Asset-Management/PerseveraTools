@@ -18,22 +18,31 @@ from .loaders import load_snapshot
 def _parse_asset(s: str) -> Asset:
     """
     Parse asset string do CLI.
-    Discreto  : "CRA022008NF:18:1059.38"       → ticker:total_units:unit_price
-    Contínuo  : "M8CREDIT::59850.30"            → ticker::total_value
+    Discreto  : "CRA022008NF:18:1059.38" ou "CRA022008NF:18:1059.38:EMISSOR"
+    Contínuo  : "M8CREDIT::59850.30" ou "M8CREDIT::59850.30:EMISSOR"
     """
     parts = s.split(":")
+    issuer = None
+    if len(parts) == 4:
+        issuer = parts[3] or None
+        parts = parts[:3]
     if len(parts) != 3:
         raise ValueError(
             f"Formato inválido para ativo '{s}'. "
-            "Use TICKER:QTD:PRECO (discreto) ou TICKER::VALOR_TOTAL (contínuo)."
+            "Use TICKER:QTD:PRECO[:EMISSOR] (discreto) ou TICKER::VALOR_TOTAL[:EMISSOR] (contínuo)."
         )
     ticker = parts[0]
     if not ticker:
         raise ValueError(f"Ticker vazio na string de ativo '{s}'.")
     try:
         if parts[1] == "":
-            return Asset(ticker=ticker, total_value=float(parts[2]))
-        return Asset(ticker=ticker, total_units=int(parts[1]), unit_price=float(parts[2]))
+            return Asset(ticker=ticker, total_value=float(parts[2]), issuer=issuer)
+        return Asset(
+            ticker=ticker,
+            total_units=int(parts[1]),
+            unit_price=float(parts[2]),
+            issuer=issuer,
+        )
     except (ValueError, TypeError) as exc:
         raise ValueError(
             f"Valores numéricos inválidos no ativo '{s}': {exc}"
@@ -49,8 +58,8 @@ def main():
         "--ativos", nargs="+", required=True,
         help=(
             "Lista de ativos. "
-            "Discreto: TICKER:QTD:PRECO (ex: CRA022008NF:18:1059.38). "
-            "Contínuo: TICKER::VALOR_TOTAL (ex: MEUFI::100000)"
+            "Discreto: TICKER:QTD:PRECO[:EMISSOR] (ex: CRA022008NF:18:1059.38:BANCO BMG). "
+            "Contínuo: TICKER::VALOR_TOTAL[:EMISSOR] (ex: MEUFI::100000)"
         ),
     )
     parser.add_argument("--officer", help="Filtrar por officer (ex: 'Otavio Ferreira' ou 'otavio')")
@@ -60,6 +69,8 @@ def main():
                         help="Alocação mínima por ativo (%% PL). Default: 1.5")
     parser.add_argument("--max-pct", type=float, default=2.0,
                         help="Alocação máxima por ativo (%% PL). Default: 2.0")
+    parser.add_argument("--max-issuer-pct", type=float, default=None,
+                        help="Exposição máxima por emissor (%% PL). Ex: 5.0")
     parser.add_argument("--min-cash", type=float, default=5.0,
                         help="Caixa mínimo pós-alocação (%% PL). Default: 5.0")
     parser.add_argument("--objetivo", choices=["max_clients", "max_volume"],
@@ -81,6 +92,7 @@ def main():
     config = AllocationConfig(
         min_pct=args.min_pct / 100,
         max_pct=args.max_pct / 100,
+        max_issuer_pct=args.max_issuer_pct / 100 if args.max_issuer_pct is not None else None,
         min_cash_pct_after=args.min_cash / 100,
         objective=args.objetivo,
         consider_existing=not args.ignore_existing,

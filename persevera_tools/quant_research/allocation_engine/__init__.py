@@ -19,6 +19,7 @@ from .core import (
     Asset,
     Client,
     ClientAllocation,
+    normalize_issuer,
 )
 from .loaders import load_snapshot
 
@@ -30,4 +31,5 @@ __all__ = [
     "Client",
     "ClientAllocation",
     "load_snapshot",
+    "normalize_issuer",
 ]
