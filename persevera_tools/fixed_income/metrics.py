@@ -209,7 +209,7 @@ def calculate_spread(
         spread['count_yield_75_100bp']      = (lt_100  & ~lt_75  ).sum(axis=1)
         spread['count_yield_100_150bp']     = (lt_150  & ~lt_100 ).sum(axis=1)
         spread['count_yield_150_250bp']     = (lt_250  & ~lt_150 ).sum(axis=1)
-        spread['count_yield_above_250bp']   = (~lt_250).sum(axis=1)
+        spread['count_yield_above_250bp']   = (vals >= 2.50).sum(axis=1)
 
     return spread
 
