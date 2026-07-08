@@ -19,6 +19,7 @@ logger = get_logger(__name__)
 RICH_TEXT_TYPE = "Collaboration~Documents/Document"
 RICH_TEXT_SECRET_FIELD = "Collaboration~Documents/secret"
 DOCUMENT_BATCH_SIZE = 100
+COLLECTION_SUBQUERY_LIMIT = 100
 
 def _is_rich_text_type(field_type: Optional[str]) -> bool:
     return field_type == RICH_TEXT_TYPE
@@ -137,6 +138,91 @@ def _get_type_name_field(related_type: Optional[str], type_name_fields: Dict[str
         return f"{related_type.split('/')[0]}/Name"
     return "fibery/id"
 
+def _is_entity_collection_field(field: Dict[str, Any], field_meta: Dict[str, Any]) -> bool:
+    """True for multi-select relation fields owned by the entity (not inverse refs)."""
+    return bool(field_meta.get("fibery/collection?") and field_meta.get("fibery/relation"))
+
+def _collection_subquery_select(
+    field_info: Dict[str, Any],
+    type_name_fields: Dict[str, str],
+) -> str:
+    """Returns the sub-field used inside a collection sub-query q/select."""
+    related_type = field_info.get("type")
+    field_type_str = (field_info.get("type") or "")
+
+    if "on-off" in field_type_str.lower():
+        return "enum/name"
+    if field_info.get("is_enum"):
+        return "enum/name"
+    if isinstance(related_type, str) and "workflow/state" in related_type.lower():
+        return "enum/name"
+    if field_info.get("meta", {}).get("fibery/type-component?"):
+        return "enum/name"
+
+    return _get_type_name_field(related_type, type_name_fields)
+
+def _build_collection_subquery(
+    field_name: str,
+    field_info: Dict[str, Any],
+    type_name_fields: Dict[str, str],
+) -> Dict[str, Any]:
+    """Builds a Fibery sub-query expression for a multi-select collection field."""
+    return {
+        "q/from": field_name,
+        "q/select": [_collection_subquery_select(field_info, type_name_fields)],
+        "q/limit": COLLECTION_SUBQUERY_LIMIT,
+    }
+
+def _extract_collection_item_value(item: Any, sub_select: str) -> Optional[str]:
+    """Extracts a display value from one element of a collection sub-query result."""
+    if item is None:
+        return None
+    if isinstance(item, str):
+        return item or None
+    if not isinstance(item, dict):
+        return str(item)
+
+    if "enum/name" in item:
+        return str(item["enum/name"])
+    if sub_select in item:
+        return str(item[sub_select])
+
+    for key, value in item.items():
+        if value is None:
+            continue
+        if key.endswith("/Name") or key.endswith("/name") or key == "fibery/id":
+            return str(value)
+    return None
+
+def _normalize_collection_value(value: Any, sub_select: str) -> List[str]:
+    """Normalizes a Fibery collection payload into a list of display strings."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return []
+    if not isinstance(value, list):
+        extracted = _extract_collection_item_value(value, sub_select)
+        return [extracted] if extracted is not None else []
+
+    normalized: List[str] = []
+    for item in value:
+        extracted = _extract_collection_item_value(item, sub_select)
+        if extracted is not None:
+            normalized.append(extracted)
+    return normalized
+
+def _normalize_collections_in_dataframe(
+    df: pd.DataFrame,
+    collection_subselects: Dict[str, str],
+) -> pd.DataFrame:
+    """Converts collection sub-query payloads into plain lists of strings."""
+    if df.empty or not collection_subselects:
+        return df
+
+    for alias, sub_select in collection_subselects.items():
+        if alias not in df.columns:
+            continue
+        df[alias] = df[alias].map(lambda value: _normalize_collection_value(value, sub_select))
+    return df
+
 def _get_db_schema() -> Optional[Tuple[Dict[str, Any], Dict[str, str]]]:
     """
     Retrieves the entire Fibery database schema and organizes it for easy access.
@@ -159,14 +245,14 @@ def _get_db_schema() -> Optional[Tuple[Dict[str, Any], Dict[str, str]]]:
             
             field_meta = field.get("fibery/meta", {})
 
-            # Skip collections and deleted fields (collection? may live in meta)
-            if (
-                field.get("fibery/collection?")
-                or field_meta.get("fibery/collection?")
-                or "_deleted" in field_name
-            ):
+            # Skip deleted fields and non-relation collections (e.g. document References).
+            if field.get("fibery/collection?") or "_deleted" in field_name:
                 continue
-            
+            if field_meta.get("fibery/collection?") and not field_meta.get("fibery/relation"):
+                continue
+
+            is_collection = _is_entity_collection_field(field, field_meta)
+
             # Determine field type
             field_type = field.get("fibery/type")
             
@@ -184,13 +270,20 @@ def _get_db_schema() -> Optional[Tuple[Dict[str, Any], Dict[str, str]]]:
                 'is_relation': is_relation,
                 'is_enum': is_enum,
                 'is_rich_text': is_rich_text,
+                'is_collection': is_collection,
                 'type': field_type,
                 'meta': field_meta
             }
         
         # Add system fields
-        fields["fibery/id"] = {'is_relation': False, 'is_enum': False, 'is_rich_text': False, 'type': 'uuid', 'meta': {}}
-        fields["fibery/public-id"] = {'is_relation': False, 'is_enum': False, 'is_rich_text': False, 'type': 'text', 'meta': {}}
+        fields["fibery/id"] = {
+            'is_relation': False, 'is_enum': False, 'is_rich_text': False,
+            'is_collection': False, 'type': 'uuid', 'meta': {},
+        }
+        fields["fibery/public-id"] = {
+            'is_relation': False, 'is_enum': False, 'is_rich_text': False,
+            'is_collection': False, 'type': 'text', 'meta': {},
+        }
         
         db_schema[display_name] = {
             'canonical_name': canonical_name,
@@ -217,12 +310,17 @@ def _build_field_selection(
     selection = {}
     
     for field_name, field_info in fields_dict.items():
-        if field_info.get("meta", {}).get("fibery/collection?"):
-            continue
-
         # Create a clean alias (remove space prefix)
         alias = field_name.split('/')[-1]
         field_type_str = (field_info.get('type') or '')
+
+        if field_info.get("is_collection"):
+            selection[alias] = _build_collection_subquery(
+                field_name,
+                field_info,
+                type_name_fields,
+            )
+            continue
 
         # Treat On-Off component types as enums, regardless of relation detection
         if 'on-off' in field_type_str.lower():
@@ -250,24 +348,19 @@ def _build_field_selection(
             selection[alias] = [field_name, 'enum/name']
         elif field_info['is_relation']:
             # For relation fields, try to get the Name field of the related entity
-            # Get the related type from meta
             related_table_name = field_info['type']
 
-            if not field_info.get('meta', {}).get('fibery/collection?', {}):
-                space_name = field_info.get('type')
-                # selection[alias] = [field_name, f'{space_name}/Name']
-
-                # Workflow state fields behave like enums
-                if isinstance(related_table_name, str) and 'workflow/state' in related_table_name.lower():
-                    selection[alias] = [field_name, 'enum/name']
-                # "On-Off" component relations also behave like enums
-                elif isinstance(related_table_name, str) and 'on-off' in related_table_name.lower():
-                    selection[alias] = [field_name, 'enum/name']
-                elif field_info.get('meta', {}).get('fibery/type-component?', {}):
-                    selection[alias] = [field_name, 'enum/name']
-                else:
-                    name_field = _get_type_name_field(related_table_name, type_name_fields)
-                    selection[alias] = [field_name, name_field]
+            # Workflow state fields behave like enums
+            if isinstance(related_table_name, str) and 'workflow/state' in related_table_name.lower():
+                selection[alias] = [field_name, 'enum/name']
+            # "On-Off" component relations also behave like enums
+            elif isinstance(related_table_name, str) and 'on-off' in related_table_name.lower():
+                selection[alias] = [field_name, 'enum/name']
+            elif field_info.get('meta', {}).get('fibery/type-component?', {}):
+                selection[alias] = [field_name, 'enum/name']
+            else:
+                name_field = _get_type_name_field(related_table_name, type_name_fields)
+                selection[alias] = [field_name, name_field]
 
         else:
             field_type_value = field_info.get('type')
@@ -292,6 +385,12 @@ def _build_field_selection(
                 selection[alias] = [field_name, name_field]
     
     return selection
+
+def _field_selection_matches_field(spec: Any, field_name: str) -> bool:
+    """Returns True when a q/select entry targets the given canonical field path."""
+    if isinstance(spec, list) and spec and spec[0] == field_name:
+        return True
+    return isinstance(spec, dict) and spec.get("q/from") == field_name
 
 def _execute_fibery_page(
     api_url: str,
@@ -385,14 +484,38 @@ def _execute_fibery_page(
 
                         alias_to_fix = next(
                             (alias for alias, spec in field_selection.items()
-                             if isinstance(spec, list) and spec[0] == problematic_field),
+                             if _field_selection_matches_field(spec, problematic_field)),
                             None,
                         )
 
                         if alias_to_fix:
                             current_spec = field_selection[alias_to_fix]
 
-                            if len(current_spec) == 1:
+                            if isinstance(current_spec, dict):
+                                sub_select = current_spec.get("q/select", ["enum/name"])
+                                current = sub_select[0] if sub_select else "enum/name"
+                                if current == "enum/name":
+                                    related_type = None
+                                    if fields_dict and problematic_field in fields_dict:
+                                        related_type = fields_dict[problematic_field].get("type")
+                                    name_field = _get_type_name_field(
+                                        related_type,
+                                        type_name_fields or {},
+                                    )
+                                    field_selection[alias_to_fix] = {
+                                        **current_spec,
+                                        "q/select": [name_field],
+                                    }
+                                    logger.info(
+                                        f"Trying display name field '{name_field}' for collection "
+                                        f"'{problematic_field}'"
+                                    )
+                                else:
+                                    logger.warning(
+                                        f"Could not fix collection '{problematic_field}'. Removing from query."
+                                    )
+                                    del field_selection[alias_to_fix]
+                            elif len(current_spec) == 1:
                                 field_selection[alias_to_fix] = [problematic_field, "enum/name"]
                                 logger.info(f"Trying enum/name for '{problematic_field}'")
                             elif len(current_spec) == 2 and current_spec[1] == "enum/name":
@@ -441,6 +564,17 @@ def _execute_fibery_page(
                         if _is_rich_text_selection(alias, spec, protected_aliases):
                             del field_selection[alias]
                             return "remove"
+                        if isinstance(spec, dict) and spec.get("q/from"):
+                            sub_select = spec.get("q/select", ["enum/name"])
+                            current = sub_select[0] if sub_select else "enum/name"
+                            if current != "fibery/id":
+                                field_selection[alias] = {
+                                    **spec,
+                                    "q/select": ["fibery/id"],
+                                }
+                                return "downgrade"
+                            del field_selection[alias]
+                            return "remove"
                         if (
                             isinstance(spec, list)
                             and len(spec) == 2
@@ -455,7 +589,7 @@ def _execute_fibery_page(
                     if problematic_field:
                         alias_to_fix = next(
                             (alias for alias, spec in field_selection.items()
-                             if isinstance(spec, list) and spec and spec[0] == problematic_field),
+                             if _field_selection_matches_field(spec, problematic_field)),
                             None,
                         )
                         if alias_to_fix:
@@ -661,7 +795,8 @@ def read_fibery(
 ) -> pd.DataFrame:
     """
     Reads all data from a Fibery table and returns it as a pandas DataFrame.
-    Automatically handles relational fields, enums, rich text, pagination, and timeouts.
+    Automatically handles relational fields, enums, multi-select collections,
+    rich text, pagination, and timeouts.
 
     Args:
         table_name: The display name of the Fibery table to read.
@@ -714,6 +849,12 @@ def read_fibery(
         if field_info.get("is_rich_text")
     ]
     rich_text_alias_set = set(rich_text_aliases)
+    collection_subselects = {
+        field_name.split("/")[-1]: _collection_subquery_select(field_info, type_name_fields)
+        for field_name, field_info in fields_to_query.items()
+        if field_info.get("is_collection")
+    }
+    collection_alias_set = set(collection_subselects)
 
     logger.info(f"Reading data from Fibery table: {canonical_name} (page_size={page_size})")
 
@@ -767,8 +908,11 @@ def read_fibery(
             document_format=rich_text_format,
         )
 
+    if collection_subselects:
+        df = _normalize_collections_in_dataframe(df, collection_subselects)
+
     for col in df.columns:
-        if col in rich_text_alias_set:
+        if col in rich_text_alias_set or col in collection_alias_set:
             continue
         if df[col].dtype in ["object", "string"] and df[col].notnull().any():
             try:
