@@ -80,29 +80,48 @@ def _get_full_schema() -> Optional[Dict[str, Any]]:
         logger.error(f"Error fetching Fibery schema: {e}", exc_info=True)
         return None
 
+def _is_scalar_text_field(field: Dict[str, Any]) -> bool:
+    """True when a field can be read as a primitive text-like display value."""
+    if field.get("fibery/collection?"):
+        return False
+
+    field_type = field.get("fibery/type") or ""
+    if field_type in ("text", "fibery/text", "uuid", "fibery/uuid"):
+        return True
+    return "text" in field_type.lower()
+
+
 def _resolve_type_name_field(canonical_type: str, type_fields: List[Dict[str, Any]]) -> str:
     """
     Returns the Fibery field path used as the display name for a type.
 
-    Built-in types (e.g. fibery/user) use lowercase ``{suffix}/name``; custom
-    domain types typically use ``{Space}/Name``.
+    Resolution order:
+    1. Field marked with ``ui/title?`` in metadata (Fibery's canonical title).
+    2. Text fields whose local name is ``Name`` or ``name``.
+    3. Built-in Fibery types: ``{suffix}/name``.
+    4. Safe fallback: ``fibery/id``.
     """
+    title_candidates: List[str] = []
     name_candidates: List[str] = []
-    for field in type_fields:
-        if field.get("fibery/collection?"):
-            continue
 
+    for field in type_fields:
         field_name = field.get("fibery/name", "")
         if "_deleted" in field_name:
             continue
-
-        local_name = field_name.rsplit("/", 1)[-1]
-        if local_name not in ("Name", "name"):
+        if not _is_scalar_text_field(field):
             continue
 
-        field_type = field.get("fibery/type") or ""
-        if field_type in ("text", "fibery/text") or "text" in field_type.lower():
+        field_meta = field.get("fibery/meta", {})
+        if field_meta.get("ui/title?"):
+            title_candidates.append(field_name)
+            continue
+
+        local_name = field_name.rsplit("/", 1)[-1]
+        if local_name in ("Name", "name"):
             name_candidates.append(field_name)
+
+    if title_candidates:
+        return title_candidates[0]
 
     for candidate in name_candidates:
         if candidate.endswith("/Name"):
@@ -114,7 +133,7 @@ def _resolve_type_name_field(canonical_type: str, type_fields: List[Dict[str, An
         suffix = canonical_type.split("/", 1)[1]
         return f"{suffix}/name"
 
-    return f"{canonical_type.split('/')[0]}/Name"
+    return "fibery/id"
 
 def _build_type_name_field_map(full_schema: Dict[str, Any]) -> Dict[str, str]:
     """Maps each type's canonical name to its human-readable name field."""
@@ -134,8 +153,6 @@ def _get_type_name_field(related_type: Optional[str], type_name_fields: Dict[str
     if isinstance(related_type, str) and related_type.startswith("fibery/"):
         suffix = related_type.split("/", 1)[1]
         return f"{suffix}/name"
-    if isinstance(related_type, str) and "/" in related_type:
-        return f"{related_type.split('/')[0]}/Name"
     return "fibery/id"
 
 def _is_entity_collection_field(field: Dict[str, Any], field_meta: Dict[str, Any]) -> bool:
@@ -656,27 +673,54 @@ def _execute_fibery_page(
                     )
                     return None, field_selection
 
-                # --- Unknown sub-field on relation: apply API suggestion if present ---
+                # --- Unknown sub-field on relation/collection: fix or downgrade ---
                 maybe_match = re.search(r'Maybe you meant "([^"]+)"', error_message)
                 wrong_field_match = re.search(r'"([^"]+)" field was not found', error_message)
-                if maybe_match and wrong_field_match:
-                    suggested_field = maybe_match.group(1)
+                if wrong_field_match:
                     wrong_field = wrong_field_match.group(1)
                     alias_to_fix = next(
                         (
                             alias for alias, spec in field_selection.items()
-                            if isinstance(spec, list)
-                            and len(spec) == 2
-                            and spec[1] == wrong_field
+                            if (
+                                isinstance(spec, list)
+                                and len(spec) == 2
+                                and spec[1] == wrong_field
+                            )
+                            or (
+                                isinstance(spec, dict)
+                                and wrong_field in spec.get("q/select", [])
+                            )
                         ),
                         None,
                     )
                     if alias_to_fix:
-                        field_selection[alias_to_fix] = [field_selection[alias_to_fix][0], suggested_field]
-                        logger.warning(
-                            f"Replacing invalid sub-field '{wrong_field}' with "
-                            f"'{suggested_field}' for '{field_selection[alias_to_fix][0]}'."
-                        )
+                        if maybe_match:
+                            suggested_field = maybe_match.group(1)
+                            current_spec = field_selection[alias_to_fix]
+                            if isinstance(current_spec, list):
+                                field_selection[alias_to_fix] = [current_spec[0], suggested_field]
+                            else:
+                                field_selection[alias_to_fix] = {
+                                    **current_spec,
+                                    "q/select": [suggested_field],
+                                }
+                            logger.warning(
+                                f"Replacing invalid sub-field '{wrong_field}' with "
+                                f"'{suggested_field}' for '{alias_to_fix}'."
+                            )
+                        else:
+                            current_spec = field_selection[alias_to_fix]
+                            if isinstance(current_spec, dict):
+                                field_selection[alias_to_fix] = {
+                                    **current_spec,
+                                    "q/select": ["fibery/id"],
+                                }
+                            else:
+                                field_selection[alias_to_fix] = [current_spec[0], "fibery/id"]
+                            logger.warning(
+                                f"Sub-field '{wrong_field}' not found. "
+                                f"Downgraded '{alias_to_fix}' to fibery/id."
+                            )
                         field_retries += 1
                         timeout_retries = 0
                         continue
