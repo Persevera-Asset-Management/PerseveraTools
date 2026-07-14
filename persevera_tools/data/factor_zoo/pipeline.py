@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import logging
+import multiprocessing
+import time
 from typing import Dict, Iterable, Literal, Mapping, Sequence
 
 import pandas as pd
@@ -199,21 +201,93 @@ def process_categories_in_order(
     return outs
 
 
+def _process_category_worker(
+    category: str,
+    *,
+    sql_min_date: str,
+    output_min_date: str | None,
+    upload: bool,
+    compute_extras: Mapping[str, object] | None,
+    batch_size: int,
+) -> tuple[str, int]:
+    """Multiprocessing worker: one derived category end-to-end."""
+    df = process_category(
+        category,
+        sql_min_date=sql_min_date,
+        output_min_date=output_min_date,
+        upload=upload,
+        compute_extras=compute_extras,
+        batch_size=batch_size,
+    )
+    return category, len(df)
+
+
 def run_independent_derived_factors(
     *,
     sql_min_date: str = "2000-01-01",
     output_min_date: str | None = "2024-01-01",
     upload: bool = True,
     compute_extras: Mapping[str, object] | None = None,
-) -> Dict[str, pd.DataFrame]:
-    """First-stage categories."""
-    return process_categories_in_order(
-        DERIVED_INDEPENDENT_ORDER,
+    parallel: bool = False,
+    max_workers: int | None = None,
+    stagger_seconds: float = 10.0,
+    batch_size: int = 5000,
+) -> Dict[str, pd.DataFrame] | Dict[str, int]:
+    """First-stage categories (sequential by default, optional multiprocessing)."""
+    if not parallel:
+        return process_categories_in_order(
+            DERIVED_INDEPENDENT_ORDER,
+            sql_min_date=sql_min_date,
+            output_min_date=output_min_date,
+            upload=upload,
+            compute_extras=compute_extras,
+        )
+
+    categories = list(DERIVED_INDEPENDENT_ORDER)
+    workers = max_workers or min(len(categories), multiprocessing.cpu_count())
+    logger.info(
+        "Running %d independent categories in parallel (%d workers, %.0fs stagger)",
+        len(categories),
+        workers,
+        stagger_seconds,
+    )
+
+    worker_kw = dict(
         sql_min_date=sql_min_date,
         output_min_date=output_min_date,
         upload=upload,
         compute_extras=compute_extras,
+        batch_size=batch_size,
     )
+
+    pending: list[tuple[str, multiprocessing.pool.AsyncResult[tuple[str, int]]]] = []
+    with multiprocessing.Pool(processes=workers) as pool:
+        for i, cat in enumerate(categories):
+            if i > 0:
+                time.sleep(stagger_seconds)
+            logger.info("Starting worker for category=%s", cat)
+            pending.append(
+                (cat, pool.apply_async(_process_category_worker, (cat,), worker_kw))
+            )
+
+        row_counts: Dict[str, int] = {}
+        errors: list[tuple[str, BaseException]] = []
+        for cat, result in pending:
+            try:
+                done_cat, n_rows = result.get()
+                row_counts[done_cat] = n_rows
+                logger.info("Category %s finished (%d rows)", done_cat, n_rows)
+            except Exception as exc:
+                logger.error("Category %s failed: %s", cat, exc, exc_info=True)
+                errors.append((cat, exc))
+
+    if errors:
+        failed = ", ".join(c for c, _ in errors)
+        raise RuntimeError(
+            f"Independent parallel run failed for: {failed}"
+        ) from errors[0][1]
+
+    return row_counts
 
 
 def run_dependent_derived_factors(
@@ -239,15 +313,23 @@ def run_all_derived_factors_sequentially(
     output_min_date: str | None = "2024-01-01",
     upload: bool = True,
     compute_extras: Mapping[str, object] | None = None,
-) -> Dict[str, pd.DataFrame]:
+    parallel_independent: bool = False,
+    max_workers: int | None = None,
+    stagger_seconds: float = 10.0,
+) -> Dict[str, pd.DataFrame] | Dict[str, int | pd.DataFrame]:
     """Runs independent phases then dependents."""
     clear_factor_definitions_cache()
     try:
-        out = run_independent_derived_factors(
-            sql_min_date=sql_min_date,
-            output_min_date=output_min_date,
-            upload=upload,
-            compute_extras=compute_extras,
+        out: Dict[str, int | pd.DataFrame] = dict(
+            run_independent_derived_factors(
+                sql_min_date=sql_min_date,
+                output_min_date=output_min_date,
+                upload=upload,
+                compute_extras=compute_extras,
+                parallel=parallel_independent,
+                max_workers=max_workers,
+                stagger_seconds=stagger_seconds,
+            )
         )
         out.update(
             run_dependent_derived_factors(
@@ -286,6 +368,23 @@ def _main(argv: Sequence[str] | None = None) -> None:
         default="2024-01-01",
         help='Truncate output rows strictly after this ISO date (empty string disables trimming).',
     )
+    p.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Run independent categories in parallel (multiprocessing).",
+    )
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Max worker processes for --parallel (default: min(categories, cpu_count)).",
+    )
+    p.add_argument(
+        "--stagger-seconds",
+        type=float,
+        default=10.0,
+        help="Delay between launching parallel workers (default: 10).",
+    )
     args = p.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO)
@@ -302,9 +401,21 @@ def _main(argv: Sequence[str] | None = None) -> None:
         return
 
     phase = args.phase or "all"
+    parallel_kw = dict(
+        parallel=args.parallel,
+        max_workers=args.workers,
+        stagger_seconds=args.stagger_seconds,
+    )
     if phase == "independent":
-        run_independent_derived_factors(**base_kw)
+        run_independent_derived_factors(**base_kw, **parallel_kw)
     elif phase == "dependent":
+        if args.parallel:
+            p.error("--parallel applies only to the independent phase")
         run_dependent_derived_factors(**base_kw)
     else:
-        run_all_derived_factors_sequentially(**base_kw)
+        run_all_derived_factors_sequentially(
+            **base_kw,
+            parallel_independent=args.parallel,
+            max_workers=args.workers,
+            stagger_seconds=args.stagger_seconds,
+        )
