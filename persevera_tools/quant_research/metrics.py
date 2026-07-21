@@ -212,6 +212,23 @@ def calculate_ewma_volatility(
         vol = vol * np.sqrt(trading_days)
     return vol
 
+def calculate_drawdown(close_prices: pd.Series) -> pd.Series:
+    """
+    Computes the drawdown from a series of close prices relative to the
+    running peak (``price / cummax(price) - 1``).
+
+    Args:
+        close_prices: Daily close prices series.
+
+    Returns:
+        A pandas Series of drawdowns (0 at peaks, negative when below the peak,
+        e.g. -0.15 for -15%).
+    """
+    prices = close_prices.dropna()
+    if prices.empty:
+        return prices.copy()
+    return prices / prices.cummax() - 1
+
 def calculate_max_drawdown(close_prices: pd.Series) -> float:
     """
     Computes the maximum drawdown from a series of close prices.
@@ -220,9 +237,13 @@ def calculate_max_drawdown(close_prices: pd.Series) -> float:
         close_prices: Daily close prices series.
 
     Returns:
-        Maximum drawdown as a negative float (e.g. -0.15 for -15%).
+        Maximum drawdown as a negative float (e.g. -0.15 for -15%),
+        or NaN if the series is empty after dropping missing values.
     """
-    return float((close_prices / close_prices.cummax() - 1).min())
+    drawdown = calculate_drawdown(close_prices)
+    if drawdown.empty:
+        return np.nan
+    return float(drawdown.min())
 
 def calculate_sharpe_ratio(close_prices: pd.Series, risk_free_rate: float) -> float:
     """
