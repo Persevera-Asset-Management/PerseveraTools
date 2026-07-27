@@ -19,7 +19,8 @@ dependencies = [
     "fredapi",
     "python-bcb",
     "requests",
-    "statsmodels"
+    "statsmodels",
+    "beautifulsoup4"
 ]
 
 [project.optional-dependencies]

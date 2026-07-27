@@ -1,3 +1,4 @@
+import warnings
 from datetime import datetime
 from typing import Optional, Union, List
 import pandas as pd
@@ -311,7 +312,7 @@ def calculate_duration(
     settlement_date: Optional[Union[str, datetime, pd.Timestamp]] = None,
     ytm: Optional[Union[float, list, tuple, dict, pd.Series]] = None,
     coupon_rate: Optional[Union[float, list, tuple, dict, pd.Series]] = None,
-    coupon_frequency: int = 1,
+    coupon_frequency: Union[int, list, tuple, dict, pd.Series] = 1,
     indice: Optional[Union[str, list, tuple, dict, pd.Series]] = None,
     use_anbima: bool = True,
 ) -> Union[dict, pd.DataFrame]:
@@ -368,6 +369,8 @@ def calculate_duration(
                      Overrides the par-bond approximation when provided. Scalar
                      or per-code.
         coupon_frequency: Number of coupon payments per year (default: 1, annual).
+                          Accepts a scalar (applied to all codes), or a list/tuple
+                          aligned positionally, or a dict/Series keyed by code.
         indice: Index type used to select the day count convention: 'DI' uses
                 DU/252; any other value uses ACT/365. Scalar or per-code.
                 Defaults to 'DI' when omitted.
@@ -378,6 +381,8 @@ def calculate_duration(
             - 'years_to_maturity': Remaining time to maturity in years (None if ANBIMA source).
             - 'ytm': Yield to maturity used (decimal).
             - 'coupon_rate': Coupon rate used (decimal, None if ANBIMA source).
+            - 'par_bond_approximation': True if coupon_rate was not provided and ytm was
+              used as a proxy (par-bond approximation); False otherwise; NaN for no_data rows.
             - 'source': 'anbima', 'calculated', or 'no_data'.
             - 'settlement_date': The settlement date used for the calculation.
         For a collection of codes, a DataFrame with those keys as columns,
@@ -402,6 +407,7 @@ def calculate_duration(
     maturity_map = _broadcast_param(maturity_date, codes, 'maturity_date')
     indice_map = _broadcast_param(indice, codes, 'indice')
     coupon_map = _broadcast_param(coupon_rate, codes, 'coupon_rate')
+    coupon_freq_map = _broadcast_param(coupon_frequency, codes, 'coupon_frequency')
     ytm_user_map = _broadcast_param(ytm, codes, 'ytm')
 
     # --- Batched database reads (only for codes without a user-provided ytm) ---
@@ -429,6 +435,7 @@ def calculate_duration(
             'years_to_maturity': np.nan,
             'ytm': ytm_decimal,
             'coupon_rate': np.nan,
+            'par_bond_approximation': np.nan,
             'source': 'no_data',
             'settlement_date': settlement,
         }
@@ -452,6 +459,7 @@ def calculate_duration(
                 'years_to_maturity': None,
                 'ytm': ytm_val,
                 'coupon_rate': None,
+                'par_bond_approximation': False,
                 'source': 'anbima',
                 'settlement_date': dur_series.index[-1],
             }
@@ -487,8 +495,19 @@ def calculate_duration(
                 )
             return _no_data_row(ytm_decimal, actual_settlement)
         bond_maturity = pd.Timestamp(bond_maturity)
-        bond_indice = indice_map[bond_code] if indice_map[bond_code] is not None else 'DI'
+        if indice_map[bond_code] is not None:
+            bond_indice = indice_map[bond_code]
+        else:
+            bond_indice = 'DI'
+            warnings.warn(
+                f"indice not specified for '{bond_code}'; defaulting to 'DI' (DU/252). "
+                "Pass indice='IPCA' (or another value) for IPCA-linked or pre-fixed bonds "
+                "to use the ACT/365 day-count convention.",
+                UserWarning,
+                stacklevel=3,
+            )
 
+        is_par_bond_approx = coupon_value is None
         effective_coupon = coupon_value if coupon_value is not None else ytm_decimal
 
         days_to_maturity = (bond_maturity - pd.Timestamp(actual_settlement)).days
@@ -498,6 +517,7 @@ def calculate_duration(
                 'years_to_maturity': 0.0,
                 'ytm': ytm_decimal,
                 'coupon_rate': effective_coupon,
+                'par_bond_approximation': is_par_bond_approx,
                 'source': 'calculated',
                 'settlement_date': actual_settlement,
             }
@@ -508,13 +528,15 @@ def calculate_duration(
         else:
             years_to_maturity = days_to_maturity / 365.0
 
-        macaulay_dur = _macaulay_duration(ytm_decimal, effective_coupon, years_to_maturity, coupon_frequency)
+        freq = coupon_freq_map[bond_code] if coupon_freq_map[bond_code] is not None else 1
+        macaulay_dur = _macaulay_duration(ytm_decimal, effective_coupon, years_to_maturity, freq)
 
         return {
             'macaulay_duration': macaulay_dur,
             'years_to_maturity': years_to_maturity,
             'ytm': ytm_decimal,
             'coupon_rate': effective_coupon,
+            'par_bond_approximation': is_par_bond_approx,
             'source': 'calculated',
             'settlement_date': actual_settlement,
         }
@@ -524,7 +546,7 @@ def calculate_duration(
     if single:
         return results[codes[0]]
 
-    columns = ['macaulay_duration', 'years_to_maturity', 'ytm', 'coupon_rate', 'source', 'settlement_date']
+    columns = ['macaulay_duration', 'years_to_maturity', 'ytm', 'coupon_rate', 'par_bond_approximation', 'source', 'settlement_date']
     df = pd.DataFrame.from_dict(results, orient='index')[columns]
     df.index.name = 'code'
     return df

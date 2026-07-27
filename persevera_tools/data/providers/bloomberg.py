@@ -4,7 +4,6 @@ import numpy as np
 from datetime import datetime
 import time
 import os
-from xbbg import blp
 
 from .base import DataProvider, DataRetrievalError
 from ..lookups import get_codes, get_securities_by_exchange
@@ -12,6 +11,40 @@ from ...config import settings
 from ...db.fibery import read_fibery
 
 DATA_PATH = settings.DATA_PATH
+
+_blp_module = None
+_blp_import_error: Optional[BaseException] = None
+
+
+def _get_blp():
+    """
+    Lazily import ``xbbg.blp``.
+
+    Importing ``xbbg.blp`` triggers a native extension load that requires the
+    Bloomberg SDK (``blpapi``) or a running Bloomberg Terminal. Deferring the
+    import to first use means that merely importing ``persevera_tools`` (or
+    constructing a ``BloombergProvider``) does not fail on machines without
+    Bloomberg access - only actually requesting Bloomberg data does.
+    """
+    global _blp_module, _blp_import_error
+    if _blp_module is None:
+        if _blp_import_error is not None:
+            raise DataRetrievalError(
+                "Bloomberg data requires the Bloomberg SDK (blpapi) or a running "
+                f"Bloomberg Terminal, which is not available on this machine. "
+                f"Original error: {_blp_import_error}"
+            ) from _blp_import_error
+        try:
+            from xbbg import blp as _blp
+        except ImportError as e:
+            _blp_import_error = e
+            raise DataRetrievalError(
+                "Bloomberg data requires the Bloomberg SDK (blpapi) or a running "
+                f"Bloomberg Terminal, which is not available on this machine. "
+                f"Original error: {e}"
+            ) from e
+        _blp_module = _blp
+    return _blp_module
 
 DataCategory = Literal[
     # Market data categories
@@ -205,7 +238,7 @@ class BloombergProvider(DataProvider):
             if best_fperiod_override:
                 api_kwargs['BEST_FPERIOD_OVERRIDE'] = best_fperiod_override
 
-            df = blp.bdh(**api_kwargs)
+            df = _get_blp().bdh(**api_kwargs)
             df = df.stack().stack().reset_index()
             df.columns = ['date', 'field', 'code_bloomberg', 'value']
             df['code'] = df['code_bloomberg'].map(securities_list)
@@ -214,7 +247,7 @@ class BloombergProvider(DataProvider):
         else:
             field_mapping = {'PX_LAST': 'close'}
             
-            df = blp.bdh(
+            df = _get_blp().bdh(
                 tickers=list(securities_list.keys()),
                 flds=list(field_mapping.keys()),
                 start_date=self.start_date,
@@ -313,7 +346,7 @@ class BloombergProvider(DataProvider):
         for index_rel in index_list:
             self.logger.info(f"Downloading members of {index_rel}...")
             try:
-                df = blp.bdh(
+                df = _get_blp().bdh(
                     tickers=list(securities_list.keys()),
                     flds=list(field_list.keys()),
                     start_date=self.start_date,
@@ -359,7 +392,7 @@ class BloombergProvider(DataProvider):
         if frequency == 'quarterly':
             api_kwargs['FILING_STATUS'] = 'OR'
             
-        df = blp.bdh(**api_kwargs)
+        df = _get_blp().bdh(**api_kwargs)
         df = df.stack(0).reset_index()
         df = df.rename(columns={'level_0': 'date', 'level_1': 'bloomberg_code'})
         
