@@ -124,10 +124,10 @@ def fetch_composition(
     feed = feed or AnbimaFeedProvider()
     today = pd.Timestamp.today()
 
-    logger.info("Baixando carteiras IHFA v1…")
+    logger.info("Baixando carteiras IHFA v1...")
     raw_v1 = _fetch_quarters(feed, V1_ENDPOINT, V1_START, V1_END)
 
-    logger.info("Baixando carteiras IHFA v2…")
+    logger.info("Baixando carteiras IHFA v2...")
     raw_v2 = _fetch_quarters(feed, V2_ENDPOINT, V2_START, (today.year, 12))
 
     parts: list[pd.DataFrame] = []
@@ -170,7 +170,7 @@ def fetch_composition(
         .drop_duplicates(subset=["identificador", "data_inicio", "data_fim"])
     )
     logger.info(
-        "Composição: %d registros (%d removidos) | %d fundos | cobertura %s → %s",
+        "Composicao: %d registros (%d removidos) | %d fundos | cobertura %s -> %s",
         len(df_comp),
         antes - len(df_comp),
         df_comp["identificador"].nunique(),
@@ -191,12 +191,12 @@ def classify_and_filter_ls(
     para 100% dentro de cada período de vigência).
     """
     fundos = fundos or AnbimaFundosProvider()
-    logger.info("Pré-carregando cache de CNPJs (FIF)…")
+    logger.info("Pre-carregando cache de CNPJs (FIF)...")
     fundos.pre_load_cnpj_cache(tipo_fundo="FIF")
 
     ids = df_comp["identificador"].dropna().unique()
     total = len(ids)
-    logger.info("Classificando %d fundos únicos…", total)
+    logger.info("Classificando %d fundos unicos...", total)
 
     registros: list[dict] = []
     for i, ident in enumerate(ids, 1):
@@ -233,7 +233,7 @@ def classify_and_filter_ls(
     )
 
     logger.info(
-        "L&S: %d fundos | cobertura %s → %s | peso médio no IHFA: %.1f%%",
+        "L&S: %d fundos | cobertura %s -> %s | peso medio no IHFA: %.1f%%",
         df_ls["cnpj_fundo"].nunique(),
         df_ls["data_inicio"].min().date(),
         df_ls["data_fim"].max().date(),
@@ -253,7 +253,7 @@ def build_index(df_ls: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     cnpj_map = {c: format_cnpj(c) for c in cnpjs_raw}
     dt_inicio = df_ls["data_inicio"].min().strftime("%Y-%m-%d")
 
-    logger.info("Buscando NAV de %d fundos L&S a partir de %s…", len(cnpj_map), dt_inicio)
+    logger.info("Buscando NAV de %d fundos L&S a partir de %s...", len(cnpj_map), dt_inicio)
     df_cota = get_funds_data(
         cnpjs=list(cnpj_map.values()),
         start_date=dt_inicio,
@@ -263,7 +263,7 @@ def build_index(df_ls: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
         raise RuntimeError("Nenhuma cota encontrada em fundos_cvm para os CNPJs L&S.")
 
     logger.info(
-        "NAV: %s → %s | %d/%d fundos com dados",
+        "NAV: %s -> %s | %d/%d fundos com dados",
         df_cota.index.min().date(),
         df_cota.index.max().date(),
         df_cota.notna().any().sum(),
@@ -373,7 +373,7 @@ def run_anbima_ihfa_ls_pipeline(
 
     if not result.empty:
         logger.info(
-            "Índice %s: %s → %s | último=%.2f | %d linhas",
+            "Indice %s: %s -> %s | ultimo=%.2f | %d linhas",
             code,
             result["date"].min().date(),
             result["date"].max().date(),
@@ -400,7 +400,7 @@ def run_anbima_ihfa_ls_pipeline(
             batch_size=batch_size,
         )
     elif upload:
-        logger.info("Skip upload — sem linhas")
+        logger.info("Skip upload - sem linhas")
 
     return result
 
