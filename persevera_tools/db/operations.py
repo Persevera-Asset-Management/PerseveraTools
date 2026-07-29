@@ -51,6 +51,57 @@ def _sanitize_for_psycopg2(data: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _pandas_dtype_to_postgres(dtype) -> str:
+    """Map a pandas dtype to a PostgreSQL column type for CREATE TABLE."""
+    if pd.api.types.is_datetime64_any_dtype(dtype):
+        return "TIMESTAMP"
+    if pd.api.types.is_bool_dtype(dtype):
+        return "BOOLEAN"
+    if pd.api.types.is_integer_dtype(dtype):
+        return "BIGINT"
+    if pd.api.types.is_float_dtype(dtype):
+        return "DOUBLE PRECISION"
+    return "TEXT"
+
+
+def _ensure_table_exists(cursor, conn, table_name: str, data: pd.DataFrame) -> None:
+    """
+    Create ``table_name`` from ``data``'s schema if it does not already exist.
+
+    Uses the live psycopg2 cursor instead of ``DataFrame.to_sql(engine, ...)``.
+    Some pandas/SQLAlchemy combinations fail to treat ``Engine`` as a Connectable
+    and then call ``engine.cursor()``, raising ``AttributeError``.
+    """
+    cursor.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_schema = current_schema()
+              AND table_name = %s
+        )
+        """,
+        (table_name,),
+    )
+    if cursor.fetchone()[0]:
+        return
+
+    col_defs = [
+        sql.SQL("{} {}").format(
+            sql.Identifier(str(col)),
+            sql.SQL(_pandas_dtype_to_postgres(data[col].dtype)),
+        )
+        for col in data.columns
+    ]
+    create_stmt = sql.SQL("CREATE TABLE {} ({})").format(
+        sql.Identifier(table_name),
+        sql.SQL(", ").join(col_defs),
+    )
+    logger.info(f"Creating table '{table_name}'")
+    cursor.execute(create_stmt)
+    conn.commit()
+
+
 @timed
 def to_sql(data: pd.DataFrame,
                table_name: str,
@@ -72,7 +123,7 @@ def to_sql(data: pd.DataFrame,
     try:
         # Create table if it doesn't exist
         logger.debug(f"Ensuring table '{table_name}' exists")
-        data.head(0).to_sql(table_name, engine, if_exists='append', index=False)
+        _ensure_table_exists(cursor, conn, table_name, data)
         
         # Prepare data for insertion
         data = _sanitize_for_psycopg2(data)

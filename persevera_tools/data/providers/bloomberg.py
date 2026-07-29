@@ -186,6 +186,74 @@ class BloombergProvider(DataProvider):
                 **kwargs
             )
     
+    @staticmethod
+    def _bdh_to_long(
+        df: Union[pd.DataFrame, pd.Series],
+        tickers: List[str],
+        fields: List[str],
+    ) -> pd.DataFrame:
+        """
+        Normalize xbbg ``bdh`` output to ``[date, field, code_bloomberg, value]``.
+
+        Column layout from Bloomberg/xbbg varies with the number of tickers and
+        fields: MultiIndex ``(ticker, field)``, ticker-only columns (single field),
+        field-only columns (single ticker), or a plain Series. Blind
+        ``stack().stack()`` raises ``AttributeError: 'Series' object has no
+        attribute 'stack'`` whenever the first stack already yields a Series.
+        """
+        empty = pd.DataFrame(columns=['date', 'field', 'code_bloomberg', 'value'])
+        if df is None or (hasattr(df, 'empty') and df.empty):
+            return empty
+
+        if isinstance(df, pd.Series):
+            out = df.rename('value').reset_index()
+            out.columns = ['date', 'value']
+            out['code_bloomberg'] = tickers[0] if tickers else df.name
+            out['field'] = fields[0] if fields else 'PX_LAST'
+            return out[['date', 'field', 'code_bloomberg', 'value']]
+
+        if isinstance(df.columns, pd.MultiIndex):
+            stacked: Union[pd.DataFrame, pd.Series] = df
+            for _ in range(df.columns.nlevels):
+                try:
+                    stacked = stacked.stack(future_stack=True)
+                except TypeError:
+                    stacked = stacked.stack()
+            out = stacked.rename('value').reset_index()
+            out.columns = ['date', 'field', 'code_bloomberg', 'value']
+            return out
+
+        try:
+            stacked = df.stack(future_stack=True).rename('value').reset_index()
+        except TypeError:
+            stacked = df.stack().rename('value').reset_index()
+        stacked.columns = ['date', '_level', 'value']
+
+        col_set = {str(c) for c in df.columns}
+        field_set = {str(f) for f in fields}
+        ticker_set = {str(t) for t in tickers}
+
+        if col_set <= field_set:
+            stacked = stacked.rename(columns={'_level': 'field'})
+            ticker = df.columns.name or (tickers[0] if len(tickers) == 1 else None)
+            if ticker is None:
+                raise DataRetrievalError(
+                    "Bloomberg returned field columns without a ticker identifier"
+                )
+            stacked['code_bloomberg'] = ticker
+        elif col_set <= ticker_set or len(fields) == 1:
+            stacked = stacked.rename(columns={'_level': 'code_bloomberg'})
+            stacked['field'] = fields[0] if fields else 'PX_LAST'
+        elif len(tickers) == 1:
+            stacked = stacked.rename(columns={'_level': 'field'})
+            stacked['code_bloomberg'] = tickers[0]
+        else:
+            raise DataRetrievalError(
+                f"Cannot interpret Bloomberg bdh columns: {list(df.columns)[:10]}"
+            )
+
+        return stacked[['date', 'field', 'code_bloomberg', 'value']]
+
     def _get_market_data(
         self,
         category: str,
@@ -238,23 +306,27 @@ class BloombergProvider(DataProvider):
             if best_fperiod_override:
                 api_kwargs['BEST_FPERIOD_OVERRIDE'] = best_fperiod_override
 
-            df = _get_blp().bdh(**api_kwargs)
-            df = df.stack().stack().reset_index()
-            df.columns = ['date', 'field', 'code_bloomberg', 'value']
+            raw = _get_blp().bdh(**api_kwargs)
+            df = self._bdh_to_long(
+                raw, tickers=list(securities_list.keys()), fields=list(field_list.keys())
+            )
             df['code'] = df['code_bloomberg'].map(securities_list)
             df['field'] = df['field'].map(field_list)
             df = df.drop(columns='code_bloomberg')
         else:
             field_mapping = {'PX_LAST': 'close'}
             
-            df = _get_blp().bdh(
+            raw = _get_blp().bdh(
                 tickers=list(securities_list.keys()),
                 flds=list(field_mapping.keys()),
                 start_date=self.start_date,
                 **kwargs
             )
-            df = df.stack().stack().reset_index()
-            df.columns = ['date', 'field', 'code_bloomberg', 'value']
+            df = self._bdh_to_long(
+                raw,
+                tickers=list(securities_list.keys()),
+                fields=list(field_mapping.keys()),
+            )
             df['code'] = df['code_bloomberg'].map(securities_list)
             df['field'] = df['field'].map(field_mapping)
             df = df.drop(columns='code_bloomberg')
@@ -346,15 +418,18 @@ class BloombergProvider(DataProvider):
         for index_rel in index_list:
             self.logger.info(f"Downloading members of {index_rel}...")
             try:
-                df = _get_blp().bdh(
+                raw = _get_blp().bdh(
                     tickers=list(securities_list.keys()),
                     flds=list(field_list.keys()),
                     start_date=self.start_date,
                     REL_INDEX=index_rel,
                 )
                 
-                df = df.stack().stack().reset_index()
-                df.columns = ['date', 'field', 'code_bloomberg', 'value']
+                df = self._bdh_to_long(
+                    raw,
+                    tickers=list(securities_list.keys()),
+                    fields=list(field_list.keys()),
+                )
                 df['code'] = df['code_bloomberg'].map(securities_list)
                 df['field'] = df['field'].map(field_list) + '_' + index_rel.lower()
                 df = df.drop(columns='code_bloomberg')

@@ -248,38 +248,52 @@ class FinancialDataService:
             f" from {self.start_date}" if self.start_date else "",
         )
 
+        if not cnpjs:
+            self.logger.warning("Empty CNPJ list — nothing to retrieve from ANBIMA Fundos")
+            return pd.DataFrame(columns=[
+                "fund_cnpj", "date", "fund_nav", "fund_total_equity",
+                "fund_inflows", "fund_outflows", "fund_holders", "fund_total_value",
+            ])
+
         kwargs: Dict[str, Any] = {"data_inicio": self.start_date}
         if tipo_fundo:
             kwargs["tipo_fundo"] = tipo_fundo
 
         attempt = 0
         last_error = None
+        cols = {
+            "cnpj_fundo": "fund_cnpj",
+            "data_competencia": "date",
+            "valor_cota": "fund_nav",
+            "valor_patrimonio_liquido": "fund_total_equity",
+            "valor_volume_total_aplicacoes": "fund_inflows",
+            "valor_volume_total_resgates": "fund_outflows",
+            "numero_cotistas": "fund_holders",
+        }
 
         while attempt < retry_attempts:
             try:
                 df = self.anbima_fundos.get_series_historicas(cnpjs, **kwargs)
-                cols = {
-                    'cnpj_fundo': 'fund_cnpj',
-                    'data_competencia': 'date',
-                    'valor_cota': 'fund_nav',
-                    'valor_patrimonio_liquido': 'fund_total_equity',
-                    'valor_volume_total_aplicacoes': 'fund_inflows',
-                    'valor_volume_total_resgates': 'fund_outflows',
-                    'numero_cotistas': 'fund_holders',
-                }
-                df = df[list(cols.keys())]
-                df = df.rename(columns=cols)
-                df['fund_total_value'] = df['fund_total_equity']
-                df['date'] = pd.to_datetime(df['date'], errors='coerce')
 
                 if df.empty:
                     self.logger.warning("No data retrieved from ANBIMA Fundos")
-                    return df
+                    return pd.DataFrame(columns=list(cols.values()) + ["fund_total_value"])
+
+                missing = [c for c in cols if c not in df.columns]
+                if missing:
+                    raise KeyError(
+                        f"ANBIMA Fundos response missing expected columns: {missing}. "
+                        f"Available: {df.columns.tolist()}"
+                    )
+
+                df = df[list(cols.keys())].rename(columns=cols)
+                df["fund_total_value"] = df["fund_total_equity"]
+                df["date"] = pd.to_datetime(df["date"], errors="coerce")
 
                 if save_to_db:
                     self.logger.info("Saving %d rows to '%s'", len(df), table_name)
                     try:
-                        df = self._save_to_db(df, table_name, ['fund_cnpj', 'date'])
+                        df = self._save_to_db(df, table_name, ["fund_cnpj", "date"])
                     except Exception as e:
                         self.logger.error("Failed to save ANBIMA Fundos data: %s", e)
                         raise
@@ -291,7 +305,7 @@ class FinancialDataService:
                 last_error = e
                 self.logger.warning("Attempt %d failed: %s", attempt, e)
                 if attempt < retry_attempts:
-                    self.logger.info("Retrying… (%d/%d)", attempt, retry_attempts)
+                    self.logger.info("Retrying... (%d/%d)", attempt, retry_attempts)
 
         error_msg = (
             f"Failed to retrieve ANBIMA Fundos data after {retry_attempts} attempts. "

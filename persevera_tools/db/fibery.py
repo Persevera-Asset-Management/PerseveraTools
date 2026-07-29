@@ -479,7 +479,7 @@ def _execute_fibery_page(
                 # --- Timeout: retry with exponential backoff ---
                 if "timeout" in error_message.lower():
                     if timeout_retries < max_timeout_retries:
-                        wait = 2 ** timeout_retries
+                        wait = 2 ** (timeout_retries + 1)  # 2s, 4s, 8s, ...
                         logger.warning(
                             f"Timeout at offset {offset}. Retrying in {wait}s "
                             f"({timeout_retries + 1}/{max_timeout_retries})..."
@@ -488,7 +488,10 @@ def _execute_fibery_page(
                         timeout_retries += 1
                         continue
                     else:
-                        logger.error(f"Timeout persisted after {max_timeout_retries} retries at offset {offset}.")
+                        logger.error(
+                            f"Timeout persisted after {max_timeout_retries} retries "
+                            f"at offset {offset} (page_size={page_size})."
+                        )
                         return None, field_selection
 
                 # --- Field type error: fix and retry ---
@@ -836,6 +839,7 @@ def read_fibery(
     where_filter: Optional[List[Any]] = None,
     params: Optional[Dict[str, Any]] = None,
     page_size: int = 1000,
+    allow_partial: bool = False,
 ) -> pd.DataFrame:
     """
     Reads all data from a Fibery table and returns it as a pandas DataFrame.
@@ -853,6 +857,9 @@ def read_fibery(
             Example: {"$cutoffDate": "2026-01-23T00:00:00Z"}
         page_size: Number of records per page. Reduce for heavy tables, increase for light ones.
             Default is 1000.
+        allow_partial: If ``False`` (default), raises when pagination fails mid-way
+            (e.g. persistent timeout) instead of returning an incomplete DataFrame.
+            Set to ``True`` only when partial results are acceptable.
 
     Returns:
         A pandas DataFrame with the table data.
@@ -928,8 +935,16 @@ def read_fibery(
         if page_entities is None:
             if not all_entities:
                 return pd.DataFrame()
-            logger.warning("Stopping pagination due to an error. Returning partial data.")
-            break
+            msg = (
+                f"Pagination failed for '{canonical_name}' after {len(all_entities)} "
+                f"records (offset={offset}, page_size={page_size}). "
+                f"Try a smaller page_size (e.g. 200-500) for heavy tables."
+            )
+            if allow_partial:
+                logger.warning("%s Returning partial data.", msg)
+                break
+            logger.error(msg)
+            raise RuntimeError(msg)
 
         all_entities.extend(page_entities)
         logger.info(f"Fetched {len(all_entities)} records so far...")
