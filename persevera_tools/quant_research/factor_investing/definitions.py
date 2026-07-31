@@ -71,7 +71,16 @@ def load_asset_taxonomy(*, force_reload: bool = False) -> pd.DataFrame:
     if _ASSETS_CACHE is not None and not force_reload:
         return _ASSETS_CACHE.copy()
 
-    df = read_fibery(table_name=_ASSETS_TABLE, include_fibery_fields=False)
+    df = read_fibery(
+        table_name=_ASSETS_TABLE,
+        include_fibery_fields=False,
+        where_filter=[
+            "=",
+            ["Inv-Taxonomia/Classificação Instrumento", "Inv-Taxonomia/Name"],
+            "$instrument",
+        ],
+        params={"$instrument": "Ação"},
+    )
     if df.empty:
         _ASSETS_CACHE = pd.DataFrame(columns=_ASSET_KEEP_COLS)
         return _ASSETS_CACHE.copy()

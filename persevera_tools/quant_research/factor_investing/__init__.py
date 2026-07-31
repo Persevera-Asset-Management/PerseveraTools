@@ -32,12 +32,13 @@ from .definitions import (
 )
 from .engine import run_backtest
 from .portfolio import scores_to_weights
-from .result import BacktestResult
+from .result import BacktestDiagnostics, BacktestResult
 from .scoring import calculate_factor_exposure
 
 __all__ = [
     "BacktestConfig",
     "BacktestResult",
+    "BacktestDiagnostics",
     "run_backtest",
     "calculate_factor_exposure",
     "scores_to_weights",
