@@ -20,6 +20,7 @@ RICH_TEXT_TYPE = "Collaboration~Documents/Document"
 RICH_TEXT_SECRET_FIELD = "Collaboration~Documents/secret"
 DOCUMENT_BATCH_SIZE = 100
 COLLECTION_SUBQUERY_LIMIT = 100
+MIN_PAGE_SIZE = 50
 
 def _is_rich_text_type(field_type: Optional[str]) -> bool:
     return field_type == RICH_TEXT_TYPE
@@ -409,6 +410,11 @@ def _field_selection_matches_field(spec: Any, field_name: str) -> bool:
         return True
     return isinstance(spec, dict) and spec.get("q/from") == field_name
 
+def _next_shrunk_page_size(page_size: int, min_page_size: int) -> Optional[int]:
+    """Halves ``page_size``, floored at ``min_page_size``. None when already at the floor."""
+    new_size = max(min_page_size, page_size // 2)
+    return new_size if new_size < page_size else None
+
 def _execute_fibery_page(
     api_url: str,
     headers: Dict[str, str],
@@ -420,10 +426,11 @@ def _execute_fibery_page(
     page_size: int,
     max_field_retries: int = 3,
     max_timeout_retries: int = 3,
+    min_page_size: int = MIN_PAGE_SIZE,
     type_name_fields: Optional[Dict[str, str]] = None,
     fields_dict: Optional[Dict[str, Dict]] = None,
     rich_text_aliases: Optional[set] = None,
-) -> Tuple[Optional[List[Any]], Dict[str, Any]]:
+) -> Tuple[Optional[List[Any]], Dict[str, Any], int]:
     """
     Executes a single paginated Fibery query with retry logic for field errors,
     secured-field permission errors, and API timeouts.
@@ -437,10 +444,12 @@ def _execute_fibery_page(
     falling back to removing the field if the downgrade does not help.
 
     On timeout errors, retries with exponential backoff (2s, 4s, 8s, ...).
+    If timeouts persist at the current page size, halves ``page_size`` (down to
+    ``min_page_size``) and retries from the same offset.
 
     Returns:
-        A tuple of (entities, corrected_field_selection), where entities is None on
-        unrecoverable error.
+        A tuple of (entities, corrected_field_selection, effective_page_size),
+        where entities is None on unrecoverable error.
     """
     field_retries = 0
     timeout_retries = 0
@@ -448,6 +457,7 @@ def _execute_fibery_page(
     max_secured_retries = max(20, len(field_selection))
     secured_attempted: set = set()
     protected_aliases = rich_text_aliases or set()
+    effective_min_page_size = max(1, min(min_page_size, page_size))
 
     while field_retries < max_field_retries and secured_retries < max_secured_retries:
         query: Dict[str, Any] = {
@@ -476,23 +486,36 @@ def _execute_fibery_page(
                 error_name = error_info.get("name", "")
                 error_message = error_info.get("message", "Unknown error")
 
-                # --- Timeout: retry with exponential backoff ---
+                # --- Timeout: retry with backoff, then auto-shrink page_size ---
                 if "timeout" in error_message.lower():
                     if timeout_retries < max_timeout_retries:
                         wait = 2 ** (timeout_retries + 1)  # 2s, 4s, 8s, ...
                         logger.warning(
-                            f"Timeout at offset {offset}. Retrying in {wait}s "
+                            f"Timeout at offset {offset} (page_size={page_size}). "
+                            f"Retrying in {wait}s "
                             f"({timeout_retries + 1}/{max_timeout_retries})..."
                         )
                         time.sleep(wait)
                         timeout_retries += 1
                         continue
-                    else:
-                        logger.error(
+
+                    new_page_size = _next_shrunk_page_size(page_size, effective_min_page_size)
+                    if new_page_size is not None:
+                        logger.warning(
                             f"Timeout persisted after {max_timeout_retries} retries "
-                            f"at offset {offset} (page_size={page_size})."
+                            f"at offset {offset} (page_size={page_size}). "
+                            f"Shrinking page_size to {new_page_size}."
                         )
-                        return None, field_selection
+                        page_size = new_page_size
+                        timeout_retries = 0
+                        continue
+
+                    logger.error(
+                        f"Timeout persisted after {max_timeout_retries} retries "
+                        f"at offset {offset} (page_size={page_size}, "
+                        f"min_page_size={effective_min_page_size})."
+                    )
+                    return None, field_selection, page_size
 
                 # --- Field type error: fix and retry ---
                 if error_name == "entity.error/query-primitive-field-expr-invalid":
@@ -559,7 +582,7 @@ def _execute_fibery_page(
                             continue
                         else:
                             logger.error(f"Could not find alias for problematic field: {problematic_field}")
-                            return None, field_selection
+                            return None, field_selection, page_size
 
                 # --- Secured-field permission error: downgrade or remove relation selections ---
                 # Fibery returns this when the API token lacks permission to read the
@@ -674,7 +697,7 @@ def _execute_fibery_page(
                         "Secured-field error and no further downgrade options. "
                         f"Original error: {error_message}"
                     )
-                    return None, field_selection
+                    return None, field_selection, page_size
 
                 # --- Unknown sub-field on relation/collection: fix or downgrade ---
                 maybe_match = re.search(r'Maybe you meant "([^"]+)"', error_message)
@@ -730,21 +753,21 @@ def _execute_fibery_page(
 
                 logger.error(f"Fibery API error: {error_message}")
                 logger.debug(f"Error details: {error_info}")
-                return None, field_selection
+                return None, field_selection, page_size
 
             # Success
-            return data[0]["result"], field_selection
+            return data[0]["result"], field_selection, page_size
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Request error at offset {offset}: {e}", exc_info=True)
-            return None, field_selection
+            return None, field_selection, page_size
 
     logger.error(
         f"Failed to fix field selection after retries "
         f"(field={field_retries}/{max_field_retries}, "
         f"secured={secured_retries}/{max_secured_retries})."
     )
-    return None, field_selection
+    return None, field_selection, page_size
 
 def _extract_document_secret(value: Any) -> Optional[str]:
     """Extracts a collaborative document secret from a rich-text field value."""
@@ -839,6 +862,7 @@ def read_fibery(
     where_filter: Optional[List[Any]] = None,
     params: Optional[Dict[str, Any]] = None,
     page_size: int = 1000,
+    min_page_size: int = MIN_PAGE_SIZE,
     allow_partial: bool = False,
 ) -> pd.DataFrame:
     """
@@ -856,7 +880,9 @@ def read_fibery(
         params: Optional dictionary of parameter values for the where_filter.
             Example: {"$cutoffDate": "2026-01-23T00:00:00Z"}
         page_size: Number of records per page. Reduce for heavy tables, increase for light ones.
-            Default is 1000.
+            Default is 1000. On persistent timeouts the reader halves this automatically
+            down to ``min_page_size``.
+        min_page_size: Lower bound used by timeout auto-shrink. Default is 50.
         allow_partial: If ``False`` (default), raises when pagination fails mid-way
             (e.g. persistent timeout) instead of returning an incomplete DataFrame.
             Set to ``True`` only when partial results are acceptable.
@@ -907,6 +933,17 @@ def read_fibery(
     }
     collection_alias_set = set(collection_subselects)
 
+    if page_size < 1:
+        raise ValueError(f"page_size must be >= 1, got {page_size}")
+    if min_page_size < 1:
+        raise ValueError(f"min_page_size must be >= 1, got {min_page_size}")
+    if min_page_size > page_size:
+        logger.warning(
+            f"min_page_size ({min_page_size}) > page_size ({page_size}); "
+            f"clamping min_page_size to {page_size}."
+        )
+        min_page_size = page_size
+
     logger.info(f"Reading data from Fibery table: {canonical_name} (page_size={page_size})")
 
     api_url = _get_fibery_api_url("commands")
@@ -917,8 +954,8 @@ def read_fibery(
     offset = 0
 
     while True:
-        logger.debug(f"Fetching page at offset {offset}...")
-        page_entities, field_selection = _execute_fibery_page(
+        logger.debug(f"Fetching page at offset {offset} (page_size={page_size})...")
+        page_entities, field_selection, page_size = _execute_fibery_page(
             api_url=api_url,
             headers=headers,
             canonical_name=canonical_name,
@@ -927,6 +964,7 @@ def read_fibery(
             params=params,
             offset=offset,
             page_size=page_size,
+            min_page_size=min_page_size,
             type_name_fields=type_name_fields,
             fields_dict=fields_to_query,
             rich_text_aliases=rich_text_alias_set,
