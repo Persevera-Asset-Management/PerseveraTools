@@ -46,6 +46,44 @@ def _get_blp():
         _blp_module = _blp
     return _blp_module
 
+
+def _bdh(**kwargs):
+    """Call ``xbbg.blp.bdh`` with stable pandas / wide defaults.
+
+    xbbg 0.12+ warns that defaults will flip to ``backend='narwhals'`` and
+    ``format='long'``. Pinning avoids silent shape changes and the FutureWarning.
+    """
+    kwargs.setdefault('backend', 'pandas')
+    kwargs.setdefault('format', 'wide')
+    return _get_blp().bdh(**kwargs)
+
+
+def _coerce_bdh_dates(dates: pd.Series) -> pd.Series:
+    """Normalize bdh date values to ``datetime64``.
+
+    Newer xbbg pipelines sometimes yield YYYYMMDD integers (e.g. ``20200101``).
+    Bare ``pd.to_datetime`` treats those as nanoseconds since the epoch, producing
+    1970-01-01 timestamps that then fail the provider ``start_date`` filter.
+    """
+    if pd.api.types.is_datetime64_any_dtype(dates):
+        return pd.to_datetime(dates)
+
+    numeric = pd.to_numeric(dates, errors='coerce')
+    if numeric.notna().any():
+        # YYYYMMDD integers live in a compact range; real epoch-ns values do not.
+        yyyymmdd_share = numeric.dropna().between(1_000_0101, 9_999_1231).mean()
+        if yyyymmdd_share > 0.9:
+            return pd.to_datetime(
+                numeric.round().astype('Int64').astype(str),
+                format='%Y%m%d',
+                errors='coerce',
+            )
+
+    parsed = pd.to_datetime(dates, errors='coerce')
+    if parsed.isna().all() and len(dates):
+        parsed = pd.to_datetime(dates.astype(str), format='%Y%m%d', errors='coerce')
+    return parsed
+
 DataCategory = Literal[
     # Market data categories
     'Atividade Bancária', 'CFTC', 'Commodity', 'Comérico', 'Crédito', 'Dívida', 'Equity', 'Futuros', 'Governo', 'Inflação', 'Macro', 'Moedas', 'Monetário', 'Setor Externo', 'Taxas', 'Trabalho', 'Varejo', 'Índices',
@@ -197,20 +235,68 @@ class BloombergProvider(DataProvider):
 
         Column layout from Bloomberg/xbbg varies with the number of tickers and
         fields: MultiIndex ``(ticker, field)``, ticker-only columns (single field),
-        field-only columns (single ticker), or a plain Series. Blind
-        ``stack().stack()`` raises ``AttributeError: 'Series' object has no
-        attribute 'stack'`` whenever the first stack already yields a Series.
+        field-only columns (single ticker), xbbg ``format='long'`` /
+        ``semi_long``, or a plain Series. Blind ``stack().stack()`` raises
+        ``AttributeError: 'Series' object has no attribute 'stack'`` whenever
+        the first stack already yields a Series.
         """
         empty = pd.DataFrame(columns=['date', 'field', 'code_bloomberg', 'value'])
         if df is None or (hasattr(df, 'empty') and df.empty):
             return empty
+
+        # Narwhals / non-pandas frames from newer xbbg backends.
+        if not isinstance(df, (pd.DataFrame, pd.Series)):
+            to_pandas = getattr(df, 'to_pandas', None)
+            if callable(to_pandas):
+                df = to_pandas()
+            else:
+                df = pd.DataFrame(df)
 
         if isinstance(df, pd.Series):
             out = df.rename('value').reset_index()
             out.columns = ['date', 'value']
             out['code_bloomberg'] = tickers[0] if tickers else df.name
             out['field'] = fields[0] if fields else 'PX_LAST'
+            out['date'] = _coerce_bdh_dates(out['date'])
             return out[['date', 'field', 'code_bloomberg', 'value']]
+
+        cols_lower = {str(c).lower(): c for c in df.columns}
+        ticker_key = next(
+            (k for k in ('ticker', 'code_bloomberg', 'bloomberg_code') if k in cols_lower),
+            None,
+        )
+        if ticker_key and 'field' in cols_lower and 'value' in cols_lower:
+            # xbbg format='long' (and similar tidy layouts)
+            date_col = cols_lower.get('date')
+            if date_col is None and not isinstance(df.index, pd.DatetimeIndex):
+                raise DataRetrievalError(
+                    "Bloomberg long-format bdh has no date column or DatetimeIndex"
+                )
+            out = pd.DataFrame({
+                'date': df[date_col] if date_col is not None else df.index,
+                'field': df[cols_lower['field']],
+                'code_bloomberg': df[cols_lower[ticker_key]],
+                'value': df[cols_lower['value']],
+            })
+            out['date'] = _coerce_bdh_dates(out['date'])
+            return out[['date', 'field', 'code_bloomberg', 'value']]
+
+        if ticker_key and 'date' in cols_lower:
+            # xbbg format='semi_long': ticker + date + one column per field
+            id_cols = [cols_lower[ticker_key], cols_lower['date']]
+            value_vars = [c for c in df.columns if c not in id_cols]
+            melted = pd.melt(
+                df,
+                id_vars=id_cols,
+                value_vars=value_vars,
+                var_name='field',
+                value_name='value',
+            )
+            melted = melted.rename(
+                columns={cols_lower[ticker_key]: 'code_bloomberg', cols_lower['date']: 'date'}
+            )
+            melted['date'] = _coerce_bdh_dates(melted['date'])
+            return melted[['date', 'field', 'code_bloomberg', 'value']]
 
         if isinstance(df.columns, pd.MultiIndex):
             stacked: Union[pd.DataFrame, pd.Series] = df
@@ -220,8 +306,22 @@ class BloombergProvider(DataProvider):
                 except TypeError:
                     stacked = stacked.stack()
             out = stacked.rename('value').reset_index()
-            out.columns = ['date', 'field', 'code_bloomberg', 'value']
-            return out
+            # After stacking both MultiIndex levels (ticker, field) last-first,
+            # typical order is date / field / ticker.
+            if out.shape[1] == 4:
+                out.columns = ['date', 'field', 'code_bloomberg', 'value']
+                # Swap if the second level looks like tickers rather than fields.
+                sample = {str(v) for v in out['field'].dropna().unique()[:50]}
+                field_set = {str(f) for f in fields}
+                ticker_set = {str(t) for t in tickers}
+                if sample and sample <= ticker_set and not sample <= field_set:
+                    out = out[['date', 'code_bloomberg', 'field', 'value']]
+                    out.columns = ['date', 'field', 'code_bloomberg', 'value']
+                out['date'] = _coerce_bdh_dates(out['date'])
+                return out[['date', 'field', 'code_bloomberg', 'value']]
+            raise DataRetrievalError(
+                f"Unexpected MultiIndex bdh shape after stack: {list(out.columns)}"
+            )
 
         try:
             stacked = df.stack(future_stack=True).rename('value').reset_index()
@@ -252,6 +352,7 @@ class BloombergProvider(DataProvider):
                 f"Cannot interpret Bloomberg bdh columns: {list(df.columns)[:10]}"
             )
 
+        stacked['date'] = _coerce_bdh_dates(stacked['date'])
         return stacked[['date', 'field', 'code_bloomberg', 'value']]
 
     def _get_market_data(
@@ -306,7 +407,7 @@ class BloombergProvider(DataProvider):
             if best_fperiod_override:
                 api_kwargs['BEST_FPERIOD_OVERRIDE'] = best_fperiod_override
 
-            raw = _get_blp().bdh(**api_kwargs)
+            raw = _bdh(**api_kwargs)
             df = self._bdh_to_long(
                 raw, tickers=list(securities_list.keys()), fields=list(field_list.keys())
             )
@@ -316,7 +417,7 @@ class BloombergProvider(DataProvider):
         else:
             field_mapping = {'PX_LAST': 'close'}
             
-            raw = _get_blp().bdh(
+            raw = _bdh(
                 tickers=list(securities_list.keys()),
                 flds=list(field_mapping.keys()),
                 start_date=self.start_date,
@@ -418,7 +519,7 @@ class BloombergProvider(DataProvider):
         for index_rel in index_list:
             self.logger.info(f"Downloading members of {index_rel}...")
             try:
-                raw = _get_blp().bdh(
+                raw = _bdh(
                     tickers=list(securities_list.keys()),
                     flds=list(field_list.keys()),
                     start_date=self.start_date,
@@ -453,9 +554,11 @@ class BloombergProvider(DataProvider):
         **kwargs
     ) -> pd.DataFrame:
         """Get regular company data."""
+        tickers = list(securities_list.keys())
+        fields = list(field_list.keys())
         api_kwargs = {
-            'tickers': list(securities_list.keys()),
-            'flds': list(field_list.keys()),
+            'tickers': tickers,
+            'flds': fields,
             'start_date': self.start_date,
             **kwargs
         }
@@ -467,18 +570,38 @@ class BloombergProvider(DataProvider):
         if frequency == 'quarterly':
             api_kwargs['FILING_STATUS'] = 'OR'
             
-        df = _get_blp().bdh(**api_kwargs)
-        df = df.stack(0).reset_index()
-        df = df.rename(columns={'level_0': 'date', 'level_1': 'bloomberg_code'})
-        
+        raw = _bdh(**api_kwargs)
+        df = self._bdh_to_long(raw, tickers=tickers, fields=fields)
+
+        if df.empty:
+            self.logger.warning(
+                f"Bloomberg bdh returned no rows "
+                f"(tickers={len(tickers)}, fields={len(fields)}, exchange={exchange})"
+            )
+            return pd.DataFrame(columns=['code', 'date', 'field', 'value'])
+
         if frequency == 'quarterly':
             df = self._adjust_quarterly_dates(df)
-            
-        df = pd.melt(df, id_vars=['date', 'bloomberg_code'], value_vars=df.columns)
-        df['code'] = df['bloomberg_code'].map(securities_list)
-        df['field'] = df['variable'].replace(field_list)
-        
-        return df[['code', 'date', 'field', 'value']].dropna()
+
+        n_raw = len(df)
+        sample_tickers = df['code_bloomberg'].dropna().astype(str).unique()[:3].tolist()
+        sample_fields = df['field'].dropna().astype(str).unique()[:5].tolist()
+        null_codes = df['code_bloomberg'].map(securities_list).isna().sum()
+
+        df['code'] = df['code_bloomberg'].map(securities_list)
+        # Keep Bloomberg field name when Fibery mapping misses (legacy replace behavior).
+        df['field'] = df['field'].replace(field_list)
+        df = df.drop(columns='code_bloomberg')
+
+        out = df[['code', 'date', 'field', 'value']].dropna()
+        if out.empty and n_raw > 0:
+            self.logger.warning(
+                f"All {n_raw} Bloomberg rows dropped after mapping "
+                f"(unmapped codes={null_codes}, null values={df['value'].isna().sum()}, "
+                f"exchange={exchange}, sample_tickers={sample_tickers}, "
+                f"sample_fields={sample_fields})"
+            )
+        return out
     
     def _process_breakeven_rates(self, df: pd.DataFrame) -> pd.DataFrame:
         """Process macro data to calculate breakeven rates."""
@@ -498,10 +621,37 @@ class BloombergProvider(DataProvider):
         return df
     
     def _adjust_quarterly_dates(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Adjust dates for quarterly data using announcement dates."""
-        df['ANNOUNCEMENT_DT'] = pd.to_datetime(df['ANNOUNCEMENT_DT'], format="%Y%m%d")
-        df['date_adj'] = df['ANNOUNCEMENT_DT'].fillna(df['date'])
-        df['date_dif'] = df.groupby('bloomberg_code')['date_adj'].diff(1)
-        df['date_adj'] = np.where(df['date_dif'].dt.days < 0, df['date'], df['date_adj'])
-        df['date'] = df['date_adj']
-        return df.drop(columns=['ANNOUNCEMENT_DT', 'date_adj', 'date_dif']) 
+        """Adjust observation dates using ``ANNOUNCEMENT_DT`` (long-format bdh).
+
+        Expects columns ``date``, ``field``, ``code_bloomberg``, ``value``.
+        Announcement rows are consumed for the calendar and dropped from output,
+        matching the previous wide-format behavior.
+        """
+        keys = ['date', 'code_bloomberg']
+        ann = (
+            df.loc[df['field'] == 'ANNOUNCEMENT_DT', keys + ['value']]
+            .assign(
+                ANNOUNCEMENT_DT=lambda x: pd.to_datetime(
+                    x['value'], format='%Y%m%d', errors='coerce'
+                )
+            )[keys + ['ANNOUNCEMENT_DT']]
+            .drop_duplicates(keys)
+        )
+        calendar = (
+            df[keys]
+            .drop_duplicates()
+            .merge(ann, on=keys, how='left')
+            .sort_values(['code_bloomberg', 'date'])
+        )
+        calendar['date_adj'] = calendar['ANNOUNCEMENT_DT'].fillna(calendar['date'])
+        calendar['date_dif'] = calendar.groupby('code_bloomberg')['date_adj'].diff(1)
+        calendar['date_adj'] = np.where(
+            calendar['date_dif'].dt.days < 0, calendar['date'], calendar['date_adj']
+        )
+
+        out = (
+            df[df['field'] != 'ANNOUNCEMENT_DT']
+            .merge(calendar[keys + ['date_adj']], on=keys, how='left')
+        )
+        out['date'] = out['date_adj'].fillna(out['date'])
+        return out.drop(columns=['date_adj']) 

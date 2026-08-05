@@ -189,4 +189,5 @@ persevera_tools/data/providers/ws_ibkr.py
 
 .codacy/
 
-#persevera_tools/data/factor_zoo/
+# Batch scripts
+*.bat

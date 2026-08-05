@@ -77,36 +77,70 @@ class DataProvider(ABC):
         
         try:
             df = df.copy()
-            
-            # Validate and convert date column
-            df['date'] = pd.to_datetime(df['date'])
-            
+
+            if df.empty:
+                self.logger.warning("No data points to validate")
+                return df
+
+            # Validate and convert date column. YYYYMMDD integers must not go
+            # through bare pd.to_datetime (they become 1970-01-01 ns timestamps).
+            df['date'] = self._coerce_dates(df['date'])
+            if df['date'].isna().all():
+                raise ValidationError("Could not parse any values in 'date' column")
+
             # Validate code column
             if df['code'].isna().any():
                 raise ValidationError("Found null values in 'code' column")
-            
+
             # Clean value column
             df = df.dropna(subset=['value'])
             df['value'] = df['value'].astype(float)
-            
+
             # Check for infinite values
             if not np.isfinite(df['value']).all():
                 raise ValidationError("Found infinite values in 'value' column")
-            
+
             # Filter by start date and sort
+            n_before = len(df)
+            date_min, date_max = df['date'].min(), df['date'].max()
             df = df[df['date'] >= self.start_date]
             if df.empty:
-                self.logger.warning("No data points found after start_date filter")
+                self.logger.warning(
+                    "No data points found after start_date filter "
+                    f"(rows={n_before}, date_range={date_min}..{date_max}, "
+                    f"start_date={self.start_date})"
+                )
                 return df
-            
+
             df = df.sort_values(['date', 'code', 'field'], ascending=[False, True, True])
-            
+
             return df[required_cols].reset_index(drop=True)
-            
+
         except Exception as e:
             if not isinstance(e, ValidationError):
                 raise ValidationError(f"Data validation failed: {str(e)}") from e
             raise
+
+    @staticmethod
+    def _coerce_dates(dates: pd.Series) -> pd.Series:
+        """Parse dates, including Bloomberg-style YYYYMMDD integers."""
+        if pd.api.types.is_datetime64_any_dtype(dates):
+            return pd.to_datetime(dates)
+
+        numeric = pd.to_numeric(dates, errors='coerce')
+        if numeric.notna().any():
+            yyyymmdd_share = numeric.dropna().between(1_000_0101, 9_999_1231).mean()
+            if yyyymmdd_share > 0.9:
+                return pd.to_datetime(
+                    numeric.round().astype('Int64').astype(str),
+                    format='%Y%m%d',
+                    errors='coerce',
+                )
+
+        parsed = pd.to_datetime(dates, errors='coerce')
+        if parsed.isna().all() and len(dates):
+            parsed = pd.to_datetime(dates.astype(str), format='%Y%m%d', errors='coerce')
+        return parsed
 
     def _log_processing(self, category: str) -> None:
         """
