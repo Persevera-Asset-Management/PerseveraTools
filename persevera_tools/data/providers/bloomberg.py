@@ -84,6 +84,21 @@ def _coerce_bdh_dates(dates: pd.Series) -> pd.Series:
         parsed = pd.to_datetime(dates.astype(str), format='%Y%m%d', errors='coerce')
     return parsed
 
+
+def _map_bloomberg_fields(series: pd.Series, field_list: Dict[str, str]) -> pd.Series:
+    """Map Bloomberg field codes to mnemonics, case-insensitively.
+
+    xbbg >=0.12 lowercases historical field names (``PX_LAST`` → ``px_last``)
+    for v0.10 compatibility. Fibery mappings stay uppercase, so a plain
+    ``Series.map`` would produce null ``field`` values and fail the DB NOT NULL.
+    """
+    if not field_list:
+        return series
+    lookup = {str(k).upper(): v for k, v in field_list.items()}
+    keys = series.astype('string').str.upper()
+    mapped = keys.map(lookup)
+    return mapped.where(mapped.notna(), series)
+
 DataCategory = Literal[
     # Market data categories
     'Atividade Bancária', 'CFTC', 'Commodity', 'Comérico', 'Crédito', 'Dívida', 'Equity', 'Futuros', 'Governo', 'Inflação', 'Macro', 'Moedas', 'Monetário', 'Setor Externo', 'Taxas', 'Trabalho', 'Varejo', 'Índices',
@@ -311,9 +326,9 @@ class BloombergProvider(DataProvider):
             if out.shape[1] == 4:
                 out.columns = ['date', 'field', 'code_bloomberg', 'value']
                 # Swap if the second level looks like tickers rather than fields.
-                sample = {str(v) for v in out['field'].dropna().unique()[:50]}
-                field_set = {str(f) for f in fields}
-                ticker_set = {str(t) for t in tickers}
+                sample = {str(v).upper() for v in out['field'].dropna().unique()[:50]}
+                field_set = {str(f).upper() for f in fields}
+                ticker_set = {str(t).upper() for t in tickers}
                 if sample and sample <= ticker_set and not sample <= field_set:
                     out = out[['date', 'code_bloomberg', 'field', 'value']]
                     out.columns = ['date', 'field', 'code_bloomberg', 'value']
@@ -329,9 +344,9 @@ class BloombergProvider(DataProvider):
             stacked = df.stack().rename('value').reset_index()
         stacked.columns = ['date', '_level', 'value']
 
-        col_set = {str(c) for c in df.columns}
-        field_set = {str(f) for f in fields}
-        ticker_set = {str(t) for t in tickers}
+        col_set = {str(c).upper() for c in df.columns}
+        field_set = {str(f).upper() for f in fields}
+        ticker_set = {str(t).upper() for t in tickers}
 
         if col_set <= field_set:
             stacked = stacked.rename(columns={'_level': 'field'})
@@ -412,7 +427,7 @@ class BloombergProvider(DataProvider):
                 raw, tickers=list(securities_list.keys()), fields=list(field_list.keys())
             )
             df['code'] = df['code_bloomberg'].map(securities_list)
-            df['field'] = df['field'].map(field_list)
+            df['field'] = _map_bloomberg_fields(df['field'], field_list)
             df = df.drop(columns='code_bloomberg')
         else:
             field_mapping = {'PX_LAST': 'close'}
@@ -429,7 +444,7 @@ class BloombergProvider(DataProvider):
                 fields=list(field_mapping.keys()),
             )
             df['code'] = df['code_bloomberg'].map(securities_list)
-            df['field'] = df['field'].map(field_mapping)
+            df['field'] = _map_bloomberg_fields(df['field'], field_mapping)
             df = df.drop(columns='code_bloomberg')
             
         if category == "macro":
@@ -532,7 +547,7 @@ class BloombergProvider(DataProvider):
                     fields=list(field_list.keys()),
                 )
                 df['code'] = df['code_bloomberg'].map(securities_list)
-                df['field'] = df['field'].map(field_list) + '_' + index_rel.lower()
+                df['field'] = _map_bloomberg_fields(df['field'], field_list) + '_' + index_rel.lower()
                 df = df.drop(columns='code_bloomberg')
                 
                 all_data.append(df)
@@ -589,8 +604,7 @@ class BloombergProvider(DataProvider):
         null_codes = df['code_bloomberg'].map(securities_list).isna().sum()
 
         df['code'] = df['code_bloomberg'].map(securities_list)
-        # Keep Bloomberg field name when Fibery mapping misses (legacy replace behavior).
-        df['field'] = df['field'].replace(field_list)
+        df['field'] = _map_bloomberg_fields(df['field'], field_list)
         df = df.drop(columns='code_bloomberg')
 
         out = df[['code', 'date', 'field', 'value']].dropna()
@@ -628,8 +642,10 @@ class BloombergProvider(DataProvider):
         matching the previous wide-format behavior.
         """
         keys = ['date', 'code_bloomberg']
+        # xbbg lowercases field names (announcement_dt); compare case-insensitively.
+        is_announcement = df['field'].astype('string').str.upper() == 'ANNOUNCEMENT_DT'
         ann = (
-            df.loc[df['field'] == 'ANNOUNCEMENT_DT', keys + ['value']]
+            df.loc[is_announcement, keys + ['value']]
             .assign(
                 ANNOUNCEMENT_DT=lambda x: pd.to_datetime(
                     x['value'], format='%Y%m%d', errors='coerce'
@@ -650,7 +666,7 @@ class BloombergProvider(DataProvider):
         )
 
         out = (
-            df[df['field'] != 'ANNOUNCEMENT_DT']
+            df.loc[~is_announcement]
             .merge(calendar[keys + ['date_adj']], on=keys, how='left')
         )
         out['date'] = out['date_adj'].fillna(out['date'])

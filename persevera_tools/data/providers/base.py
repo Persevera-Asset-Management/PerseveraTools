@@ -92,8 +92,11 @@ class DataProvider(ABC):
             if df['code'].isna().any():
                 raise ValidationError("Found null values in 'code' column")
 
-            # Clean value column
-            df = df.dropna(subset=['value'])
+            # Clean value/field columns (null field violates indicadores NOT NULL)
+            df = df.dropna(subset=['value', 'field'])
+            if df.empty:
+                self.logger.warning("No data points left after dropping null value/field")
+                return df
             df['value'] = df['value'].astype(float)
 
             # Check for infinite values
